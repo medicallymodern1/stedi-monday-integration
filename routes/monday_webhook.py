@@ -61,15 +61,10 @@ async def handle_event(body: dict):
 
     logger.info(f"Status: '{new_label}' | item: {item_id}")
 
-    # if new_label != "Submit Claim":
-    #     logger.info(f"Ignored — status is '{new_label}'")
-    #     return
-
-    # Handle both real and test claim submission
     if new_label == "Submit Claim":
         is_test = False
     elif new_label == "Test Claim Submitted":
-        print("Test Claim Submitted")
+        logger.info("Test Claim Submitted triggered")
         is_test = True
     else:
         logger.info(f"Ignored — status is '{new_label}'")
@@ -99,45 +94,49 @@ async def handle_event(body: dict):
     # Step 3: Submit each payload
     for i, payload in enumerate(stedi_payloads, 1):
 
-        # ── If test mode: override payer to Stedi Test Payer ──────────
+        # Override payer to Stedi Test Payer in test mode
         if is_test:
             payload["tradingPartnerServiceId"] = "STEDITEST"
-            payload["tradingPartnerName"] = "Stedi Test Payer"
-            payload["receiver"] = {"organizationName": "Stedi"}
-            payload["usageIndicator"] = "T"
-            logger.info(f"TEST MODE: payload overridden to Stedi Test Payer")
-        # ──────────────────────────────────────────────────────────────
+            payload["tradingPartnerName"]      = "Stedi Test Payer"
+            payload["receiver"]                = {"organizationName": "Stedi"}
+            payload["usageIndicator"]          = "T"
+            logger.info("TEST MODE: payload overridden to Stedi Test Payer (usageIndicator=T)")
 
         payer = payload.get("tradingPartnerName", "Unknown")
-        logger.info(f"Step 3: Submitting payload #{i} | payer={payer}")
+        logger.info(f"Step 3: Submitting payload #{i} | payer={payer} | test={is_test}")
 
         try:
             stedi_response = submit_claim(payload)
-            claim_id = stedi_response.get("claim_id", "")
-            transaction_id = stedi_response.get("transaction_id", "")
+            claim_id               = stedi_response.get("claim_id", "")
+            transaction_id         = stedi_response.get("transaction_id", "")
             patient_control_number = stedi_response.get("patient_control_number", "")
+            inline_277_status      = stedi_response.get("inline_277_status", "Pending")
 
             logger.info(f"Submitted: claim_id={claim_id} | pcn={patient_control_number}")
 
-            # Update Order Board → Submitted
+            # Step 4a: Update Order Board → Submitted
+            # Claims Board item is only created if this succeeds
+            status_updated = False
             try:
                 update_claim_status(item_id=item_id, status="Submitted")
                 logger.info("Order status → Submitted")
+                status_updated = True
             except Exception as e:
                 logger.warning(f"Status update failed: {e}")
 
-            # ── ADD THIS: Store PCN + claim_id on Order Board ──────────────
+            # Step 4b: Store claim_id on Order Board item
+            # Used later by 277/835 webhooks to find this order
             try:
                 store_claim_pcn(
                     item_id=item_id,
                     pcn=patient_control_number,
                     claim_id=claim_id,
                 )
+                logger.info(f"Stored claim_id={claim_id} on order item {item_id}")
             except Exception as e:
                 logger.warning(f"PCN store failed: {e}")
-            # ────────────────────────────────────────────────────────────────
 
-            # ── ADD THIS: Post update to Monday item timeline ───────────────
+            # Step 4c: Post submission comment to Monday Updates tab
             try:
                 post_claim_update_to_monday(
                     item_id=item_id,
@@ -145,14 +144,12 @@ async def handle_event(body: dict):
                     payer=payer,
                     pcn=patient_control_number,
                     is_test=is_test,
-                    stedi_payload=payload,  # ← ADD THIS LINE
+                    stedi_payload=payload,
                 )
             except Exception as e:
                 logger.warning(f"Monday update post failed: {e}")
-            # ────────────────────────────────────────────────────────────────
 
-            # Parse inline 277 status
-            inline_277_status = stedi_response.get("inline_277_status", "Pending")
+            # Step 4d: Update inline 277 status if already available
             if inline_277_status != "Pending":
                 try:
                     update_277_status(
@@ -164,16 +161,19 @@ async def handle_event(body: dict):
                 except Exception as e:
                     logger.warning(f"277 update failed: {e}")
 
-            # Create Claims Board item
-            try:
-                claims_item_id = create_claims_board_item(
-                    order_item=order_data,
-                    claim_id=claim_id,
-                    payer_name=payer,
-                )
-                logger.info(f"Claims Board item created: {claims_item_id}")
-            except Exception as e:
-                logger.warning(f"Claims Board creation failed: {e}")
+            # Step 5: Create Claims Board item ONLY if status updated to Submitted
+            if status_updated:
+                try:
+                    claims_item_id = create_claims_board_item(
+                        order_item=order_data,
+                        claim_id=claim_id,
+                        payer_name=payer,
+                    )
+                    logger.info(f"Claims Board item created: {claims_item_id}")
+                except Exception as e:
+                    logger.warning(f"Claims Board creation failed: {e}")
+            else:
+                logger.warning(f"Skipping Claims Board creation — status update failed for item {item_id}")
 
         except Exception as e:
             logger.error(f"Failed on payload #{i}: {e}", exc_info=True)
