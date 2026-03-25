@@ -395,21 +395,36 @@ def post_claim_update_to_monday(
     claim_id: str,
     payer: str,
     pcn: str,
+    is_test: bool = False,
+    stedi_payload: dict = None,   # ← ADD THIS PARAMETER
 ) -> None:
     """
     Post a text update to the Monday item's Updates section.
     Shows as a comment/log entry visible in the item timeline.
+    Includes the full JSON payload sent to Stedi.
     """
+    import json
     from datetime import datetime
 
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    mode_tag = "🧪 TEST CLAIM" if is_test else "✅ LIVE CLAIM"
+
+    # Format the Stedi payload as pretty JSON if provided
+    payload_section = ""
+    if stedi_payload:
+        try:
+            payload_json = json.dumps(stedi_payload, indent=2)
+            payload_section = f"\n\n--- Stedi Payload ---\n{payload_json}"
+        except Exception:
+            payload_section = "\n\n--- Stedi Payload ---\n[could not serialize]"
 
     message = (
-        f"✅ Claim submitted to Stedi\n"
+        f"{mode_tag} submitted to Stedi\n"
         f"Payer: {payer}\n"
         f"Claim ID: {claim_id}\n"
         f"Patient Control #: {pcn}\n"
         f"Submitted at: {now}"
+        f"{payload_section}"
     )
 
     mutation = """
@@ -425,7 +440,7 @@ def post_claim_update_to_monday(
             "itemId": str(item_id),
             "body":   message,
         })
-        logger.info(f"Posted update to Monday item {item_id}")
+        logger.info(f"Posted claim update to Monday item {item_id}")
     except Exception as e:
         logger.warning(f"Failed to post Monday update: {e}")
 

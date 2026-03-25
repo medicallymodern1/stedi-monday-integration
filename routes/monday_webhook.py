@@ -144,6 +144,8 @@ async def handle_event(body: dict):
                     claim_id=claim_id,
                     payer=payer,
                     pcn=patient_control_number,
+                    is_test=is_test,
+                    stedi_payload=payload,  # ← ADD THIS LINE
                 )
             except Exception as e:
                 logger.warning(f"Monday update post failed: {e}")
