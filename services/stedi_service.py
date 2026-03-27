@@ -389,9 +389,12 @@ def get_era_as_835_file(transaction_id: str) -> str:
     """
     logger.info(f"Fetching 835 ERA: transaction_id={transaction_id}")
     try:
+        headers = get_stedi_headers()
+        headers["Accept"] = "application/json"
+
         response = requests.get(
             f"{STEDI_BASE_URL}/reports/era/{transaction_id}",
-            headers=get_stedi_headers(),
+            headers=headers,
             timeout=30,
         )
         response.raise_for_status()

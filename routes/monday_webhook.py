@@ -91,6 +91,8 @@ async def handle_event(body: dict):
         logger.error(f"Failed to build claim: {e}", exc_info=True)
         return
 
+    submitted_claims = []
+
     # Step 3: Submit each payload
     for i, payload in enumerate(stedi_payloads, 1):
 
@@ -138,28 +140,34 @@ async def handle_event(body: dict):
 
             # Step 4c: Post submission comment to Monday Updates tab
             try:
-                post_claim_update_to_monday(
-                    item_id=item_id,
-                    claim_id=claim_id,
-                    payer=payer,
-                    pcn=patient_control_number,
-                    is_test=is_test,
-                    stedi_payload=payload,
-                )
+                # post_claim_update_to_monday(
+                #     item_id=item_id,
+                #     claim_id=claim_id,
+                #     payer=payer,
+                #     pcn=patient_control_number,
+                #     is_test=is_test,
+                #     stedi_payload=payload,
+                # )
+                submitted_claims.append({
+                    "claim_id": claim_id,
+                    "payer": payer,
+                    "pcn": patient_control_number,
+                    "payload": payload,
+                })
             except Exception as e:
                 logger.warning(f"Monday update post failed: {e}")
 
             # Step 4d: Update inline 277 status if already available
-            if inline_277_status != "Pending":
-                try:
-                    update_277_status(
-                        item_id=item_id,
-                        status=inline_277_status,
-                        rejection_reason="",
-                    )
-                    logger.info(f"277 status → {inline_277_status}")
-                except Exception as e:
-                    logger.warning(f"277 update failed: {e}")
+            # if inline_277_status != "Pending":
+            #     try:
+            #         update_277_status(
+            #             item_id=item_id,
+            #             status=inline_277_status,
+            #             rejection_reason="",
+            #         )
+            #         logger.info(f"277 status → {inline_277_status}")
+            #     except Exception as e:
+            #         logger.warning(f"277 update failed: {e}")
 
             # Step 5: Create Claims Board item ONLY if status updated to Submitted
             if status_updated:
@@ -177,6 +185,16 @@ async def handle_event(body: dict):
 
         except Exception as e:
             logger.error(f"Failed on payload #{i}: {e}", exc_info=True)
+
+    if submitted_claims:
+        try:
+            post_claim_update_to_monday(
+                item_id=item_id,
+                submitted_claims=submitted_claims,
+                is_test=is_test,
+            )
+        except Exception as e:
+            logger.warning(f"Monday update post failed: {e}")
 
 
 def log_order_data(order: dict):

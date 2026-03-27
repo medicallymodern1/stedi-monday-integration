@@ -349,14 +349,74 @@ SUBITEM_ERA_COLUMN_MAP = {
     "Parsed Adj Reasons":    ("long_text_mm1g7xmy",     "long_text"), # Adjustment Reasons
 }
 
+#
+# def store_claim_pcn(item_id: str, pcn: str, claim_id: str) -> None:
+#     """
+#     Store patientControlNumber and claim_id on Order Board item.
+#     Used to match 277/835 responses back to the correct order.
+#     Requires 'Claim ID' text column added by Brandon.
+#     """
+#     board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
+#
+#     mutation = """
+#     mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+#       change_column_value(
+#         item_id: $itemId,
+#         board_id: $boardId,
+#         column_id: $columnId,
+#         value: $value
+#       ) { id }
+#     }
+#     """
+#
+#     # Store claim_id in the new Claim ID column Brandon added
+#     # Update column ID once confirmed from board
+#     fields = {
+#         "text_mm1ra2v1": pcn,   # Claim ID column — update ID if different
+#     }
+#
+#     for col_id, value in fields.items():
+#         if not value:
+#             continue
+#         try:
+#             run_query(mutation, {
+#                 "itemId":   str(item_id),
+#                 "boardId":  str(board_id),
+#                 "columnId": col_id,
+#                 "value":    f'"{value}"',
+#             })
+#             logger.info(f"Stored claim_id={claim_id} on order item {item_id}")
+#         except Exception as e:
+#             logger.warning(f"Failed to store claim_id: {e}")
+
+def _get_column_value(item_id: str, column_id: str) -> str:
+    """Read a single column value from an Order Board item"""
+    query = """
+    query GetItem($itemId: ID!) {
+      items(ids: [$itemId]) {
+        column_values { id text }
+      }
+    }
+    """
+    try:
+        result = run_query(query, {"itemId": item_id})
+        cols = result.get("data", {}).get("items", [{}])[0].get("column_values", [])
+        for col in cols:
+            if col.get("id") == column_id:
+                return col.get("text", "") or ""
+    except Exception:
+        pass
+    return ""
 
 def store_claim_pcn(item_id: str, pcn: str, claim_id: str) -> None:
-    """
-    Store patientControlNumber and claim_id on Order Board item.
-    Used to match 277/835 responses back to the correct order.
-    Requires 'Claim ID' text column added by Brandon.
-    """
     board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
+
+    # Read existing value first, then append
+    existing = _get_column_value(item_id, "text_mm1ra2v1")
+    if existing and pcn not in existing:
+        new_value = f"{existing},{pcn}"
+    else:
+        new_value = pcn
 
     mutation = """
     mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
@@ -368,81 +428,52 @@ def store_claim_pcn(item_id: str, pcn: str, claim_id: str) -> None:
       ) { id }
     }
     """
-
-    # Store claim_id in the new Claim ID column Brandon added
-    # Update column ID once confirmed from board
-    fields = {
-        "text_mm1ra2v1": claim_id,   # Claim ID column — update ID if different
-    }
-
-    for col_id, value in fields.items():
-        if not value:
-            continue
-        try:
-            run_query(mutation, {
-                "itemId":   str(item_id),
-                "boardId":  str(board_id),
-                "columnId": col_id,
-                "value":    f'"{value}"',
-            })
-            logger.info(f"Stored claim_id={claim_id} on order item {item_id}")
-        except Exception as e:
-            logger.warning(f"Failed to store claim_id: {e}")
-
+    try:
+        run_query(mutation, {
+            "itemId":   str(item_id),
+            "boardId":  str(board_id),
+            "columnId": "text_mm1ra2v1",
+            "value":    f'"{new_value}"',
+        })
+        logger.info(f"Stored pcn={pcn} on order item {item_id} (full: {new_value})")
+    except Exception as e:
+        logger.warning(f"Failed to store pcn: {e}")
 
 def post_claim_update_to_monday(
     item_id: str,
-    claim_id: str,
-    payer: str,
-    pcn: str,
+    submitted_claims: list,
     is_test: bool = False,
-    stedi_payload: dict = None,   # ← ADD THIS PARAMETER
 ) -> None:
-    """
-    Post a text update to the Monday item's Updates section.
-    Shows as a comment/log entry visible in the item timeline.
-    Includes the full JSON payload sent to Stedi.
-    """
     import json
     from datetime import datetime
-
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     mode_tag = "🧪 TEST CLAIM" if is_test else "✅ LIVE CLAIM"
 
-    # Format the Stedi payload as pretty JSON if provided
-    payload_section = ""
-    if stedi_payload:
-        try:
-            payload_json = json.dumps(stedi_payload, indent=2)
-            payload_section = f"\n\n--- Stedi Payload ---\n{payload_json}"
-        except Exception:
-            payload_section = "\n\n--- Stedi Payload ---\n[could not serialize]"
+    lines = [f"{mode_tag} submitted to Stedi — {now}\n"]
 
-    message = (
-        f"{mode_tag} submitted to Stedi\n"
-        f"Payer: {payer}\n"
-        f"Claim ID: {claim_id}\n"
-        f"Patient Control #: {pcn}\n"
-        f"Submitted at: {now}"
-        f"{payload_section}"
-    )
+    for i, c in enumerate(submitted_claims, 1):
+        payload_json = json.dumps(c["payload"], indent=2)
+        lines.append(
+            f"-- Claim #{i} --\n"
+            f"Payer: {c['payer']}\n"
+            f"Claim ID: {c['claim_id']}\n"
+            f"Patient Control #: {c['pcn']}\n"
+            f"Payload:\n{payload_json}\n"
+        )
+
+    message = "\n".join(lines)
 
     mutation = """
     mutation PostUpdate($itemId: ID!, $body: String!) {
-      create_update(item_id: $itemId, body: $body) {
-        id
-      }
+      create_update(item_id: $itemId, body: $body) { id }
     }
     """
-
     try:
-        run_query(mutation, {
-            "itemId": str(item_id),
-            "body":   message,
-        })
-        logger.info(f"Posted claim update to Monday item {item_id}")
+        run_query(mutation, {"itemId": str(item_id), "body": message})
+        logger.info(f"Posted combined claim update to Monday item {item_id}")
     except Exception as e:
         logger.warning(f"Failed to post Monday update: {e}")
+
 
 def populate_era_service_line_subitems(claims_item_id: str, children: list) -> None:
     """

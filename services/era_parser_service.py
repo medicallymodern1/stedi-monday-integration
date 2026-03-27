@@ -216,15 +216,58 @@ def parse_era_json(era_json: dict) -> dict:
 
 # ── Functions called from stedi_webhook.py ────────────────────────────────────
 
-def parse_era_from_string(era_content: str) -> list[dict]:
-    """Parse ERA from raw string — wraps parse_era_json for string input"""
+def parse_era_from_string(era_content: str) -> list:
     import json
     if not era_content:
         return []
     try:
         era_json = json.loads(era_content)
-        result = parse_era_json(era_json)
-        return [result]  # Return as list for compatibility
+
+        # ── Stedi API format ──────────────────────────────────────────
+        # Structure: transactions[].detailInfo[].paymentInfo[]
+        # financialInformation and paymentAndRemitReassociationDetails
+        # are at the transaction level, not the root
+        if "transactions" in era_json:
+            results = []
+            for txn in era_json.get("transactions", []):
+
+                # Envelope fields are at transaction level
+                financial_info = txn.get("financialInformation", {})
+                remit_details  = txn.get("paymentAndRemitReassociationDetails", {})
+
+                paid_date    = format_stedi_date(financial_info.get("checkIssueOrEFTEffectiveDate", ""))
+                check_number = remit_details.get("checkOrEFTTraceNumber", "")
+
+                for detail in txn.get("detailInfo", []):
+                    for payment in detail.get("paymentInfo", []):
+                        # Build flat dict that parse_era_json expects
+                        flat = {
+                            "claimPaymentInfo": payment.get("claimPaymentInfo", {}),
+                            "serviceLines":     payment.get("serviceLines", []),
+                            "patientName":      payment.get("patientName", {}),
+                            # Inject envelope fields so parse_era_json picks them up
+                            "financialInformation": {
+                                "paymentDate": paid_date,
+                            },
+                            "reassociationTraceNumber": {
+                                "checkOrEftNumber": check_number,
+                            },
+                        }
+                        result = parse_era_json(flat)
+                        results.append(result)
+
+            logger.info(f"Parsed {len(results)} ERA row(s) from Stedi API format")
+            return results
+
+        # ── Flat format (single claim at root) ────────────────────────
+        elif "claimPaymentInfo" in era_json:
+            result = parse_era_json(era_json)
+            return [result]
+
+        else:
+            logger.error(f"Unknown ERA JSON format. Top-level keys: {list(era_json.keys())}")
+            return []
+
     except Exception as e:
         logger.error(f"parse_era_from_string failed: {e}", exc_info=True)
         return []

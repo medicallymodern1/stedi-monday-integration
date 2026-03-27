@@ -192,6 +192,10 @@ def parse_277_status(report: dict) -> tuple:
         claim_status = claims.get("claimStatus", {})
         patient_account_number = claims.get("patientAccountNumber", "")
 
+        # patientAccountNumber is on claimStatus, not claims — try both
+        if not patient_account_number:
+            patient_account_number = claim_status.get("patientAccountNumber", "")
+
         info_statuses = (
             claim_status
             .get("informationClaimStatuses", [{}])[0]
@@ -219,21 +223,57 @@ def parse_277_status(report: dict) -> tuple:
         logger.error(f"[277] parse failed: {e}")
         return "Unknown", "", ""
 
+#
+# def find_order_item_by_pcn(patient_control_number: str) -> str:
+#     """
+#     Find Order Board item by patientControlNumber.
+#     PCN is stored in the Order Board when claim is submitted.
+#     We need to search by it.
+#     """
+#     from services.monday_service import run_query
+#     import os
+#
+#     board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
+#     if not board_id or not patient_control_number:
+#         return ""
+#
+#     # Search all items for matching PCN
+#     query = """
+#     query FindItem($boardId: ID!) {
+#       boards(ids: [$boardId]) {
+#         items_page(limit: 200) {
+#           items {
+#             id
+#             name
+#             column_values { id text }
+#           }
+#         }
+#       }
+#     }
+#     """
+#     try:
+#         result = run_query(query, {"boardId": board_id})
+#         items = (
+#             result.get("data", {})
+#             .get("boards", [{}])[0]
+#             .get("items_page", {})
+#             .get("items", [])
+#         )
+#         for item in items:
+#             for col in item.get("column_values", []):
+#                 # if col.get("text") == patient_control_number:
+#                 if col.get("id") == "text_mm1ra2v1" and col.get("text") == patient_control_number:
+#                     logger.info(f"Found Order item {item['id']} for PCN={patient_control_number}")
+#                     return item["id"]
+#     except Exception as e:
+#         logger.error(f"Order item search failed: {e}")
+#     return ""
 
 def find_order_item_by_pcn(patient_control_number: str) -> str:
-    """
-    Find Order Board item by patientControlNumber.
-    PCN is stored in the Order Board when claim is submitted.
-    We need to search by it.
-    """
-    from services.monday_service import run_query
-    import os
-
     board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
     if not board_id or not patient_control_number:
         return ""
 
-    # Search all items for matching PCN
     query = """
     query FindItem($boardId: ID!) {
       boards(ids: [$boardId]) {
@@ -257,9 +297,12 @@ def find_order_item_by_pcn(patient_control_number: str) -> str:
         )
         for item in items:
             for col in item.get("column_values", []):
-                if col.get("text") == patient_control_number:
-                    logger.info(f"Found Order item {item['id']} for PCN={patient_control_number}")
-                    return item["id"]
+                if col.get("id") == "text_mm1ra2v1":
+                    # ── Support comma-separated PCNs for multi-claim orders ──
+                    stored_pcns = [v.strip() for v in (col.get("text") or "").split(",")]
+                    if patient_control_number in stored_pcns:
+                        logger.info(f"Found Order item {item['id']} for PCN={patient_control_number}")
+                        return item["id"]
     except Exception as e:
         logger.error(f"Order item search failed: {e}")
     return ""
@@ -283,46 +326,42 @@ async def handle_835_event(transaction_id: str, detail: dict) -> None:
         logger.info(f"[835] ERA fetched, length={len(era_content)}")
 
         # Step 2: Parse ERA JSON
-        import json
-        era_json = json.loads(era_content)
-        logger.info(f"[835] ERA JSON keys: {list(era_json.keys())}")
+        from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
 
-        from services.era_parser_service import parse_era_json, summarize_era_row_for_monday
-        result = parse_era_json(era_json)
-        parent = result.get("parent", {})
-
-        patient_control_num = parent.get("raw_patient_control_num", "")
-        logger.info(
-            f"[835] Parsed: pcn={patient_control_num} | "
-            f"paid={parent.get('primary_paid')} | "
-            f"pr={parent.get('pr_amount')}"
-        )
-
-        # Step 3: Find Claims Board item by correlationId stored in text_mkwzbcme
-        # The correlationId was stored when claim was created
-        claims_item_id = _find_claims_item_by_correlation_id(transaction_id)
-
-        if not claims_item_id:
-            # Fallback: try to find by PCN
-            logger.warning(f"[835] No item found by transaction_id, trying PCN={patient_control_num}")
-            claims_item_id = _find_claims_item_by_pcn(patient_control_num)
-
-        if not claims_item_id:
-            logger.warning(f"[835] No Claims Board item found for this ERA")
+        era_rows = parse_era_from_string(era_content)
+        if not era_rows:
+            logger.warning(f"[835] No rows parsed — check ERA format in logs above")
             return
 
-        logger.info(f"[835] Found Claims Board item: {claims_item_id}")
+        logger.info(f"[835] Parsed {len(era_rows)} ERA row(s)")
 
-        # Step 4: Populate Monday
-        summary = summarize_era_row_for_monday(result)
-        from services.monday_service import populate_era_data_on_claims_item
-        populate_era_data_on_claims_item(claims_item_id, summary)
-        logger.info(f"[835] Populated Claims Board item {claims_item_id}")
+        # Step 3 & 4: For each parsed row, find Claims Board item and populate
+        for era_row in era_rows:
+            parent = era_row.get("parent", {})
+            patient_control_num = parent.get("raw_patient_control_num", "")
 
-    except json.JSONDecodeError:
-        # ERA might be EDI format not JSON — log raw content
-        logger.warning(f"[835] ERA is not JSON format — raw content logged")
-        logger.info(f"[835] Raw ERA content: {era_content[:500]}")
+            logger.info(
+                f"[835] PCN={patient_control_num} | "
+                f"paid={parent.get('primary_paid')} | "
+                f"pr={parent.get('pr_amount')}"
+            )
+
+            claims_item_id = _find_claims_item_by_correlation_id(transaction_id)
+            if not claims_item_id:
+                logger.info(f"[835] No item by transaction_id, trying PCN={patient_control_num}")
+                claims_item_id = _find_claims_item_by_pcn(patient_control_num)
+
+            if not claims_item_id:
+                logger.warning(f"[835] No Claims Board item found for PCN={patient_control_num}")
+                continue
+
+            logger.info(f"[835] Found Claims Board item: {claims_item_id}")
+
+            summary = summarize_era_row_for_monday(era_row)
+            from services.monday_service import populate_era_data_on_claims_item
+            populate_era_data_on_claims_item(claims_item_id, summary)
+            logger.info(f"[835] Populated Claims Board item {claims_item_id}")
+
     except Exception as e:
         logger.error(f"[835] Failed: {e}", exc_info=True)
 
