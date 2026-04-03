@@ -22,7 +22,7 @@ from services.era_parser_service import (
     parse_era_from_string,
     summarize_era_row_for_monday,
 )
-from services.monday_service import populate_era_data_on_claims_item
+from services.monday_service import populate_era_data_on_claims_item, update_277_on_claims_board
 from services.monday_service import run_query
 from services.stedi_service import get_era_as_835_file, get_277_report
 
@@ -143,35 +143,56 @@ async def handle_stedi_event(body: dict) -> None:
         logger.info(f"Unhandled transaction set: {tx_set}")
 
 async def handle_277_event(transaction_id: str, detail: dict) -> None:
-    """Parse 277CA and update Monday Order Board 277 Status"""
     logger.info(f"[277] Processing transaction_id={transaction_id}")
     try:
-        from services.stedi_service import get_277_report
-        from services.monday_service import update_277_status
-
         report = get_277_report(transaction_id)
-        logger.info(f"[277] Report fetched successfully")
+        status, rejection_reason, pcn, claim_id = parse_277_status(report)
+        logger.info(f"[277] status={status} | pcn={pcn} | claim_id={claim_id}")
 
-        # Parse status from 277 report
-        status, rejection_reason, patient_account_number = parse_277_status(report)
-        logger.info(f"[277] Status={status} | PCN={patient_account_number}")
+        monday_status = _map_277_status(status, report)
+        logger.info(f"[277] monday_status={monday_status}")
 
-        # Find Order Board item by patientControlNumber
-        item_id = find_order_item_by_pcn(patient_account_number)
-        if not item_id:
-            logger.warning(f"[277] No Order Board item found for PCN={patient_account_number}")
+        claims_item_id = ""
+        if pcn:
+            claims_item_id = _find_claims_item_by_pcn(pcn)
+        if not claims_item_id and claim_id:
+            logger.info(f"[277] PCN lookup failed, trying claim_id={claim_id}")
+            claims_item_id = _find_claims_item_by_correlation_id(claim_id)
+
+        if not claims_item_id:
+            logger.warning(f"[277] No Claims Board item for pcn={pcn} or claim_id={claim_id}")
             return
 
-        # Update 277 Status on Order Board
-        update_277_status(
-            item_id=item_id,
-            status=status,
-            rejection_reason=rejection_reason,
-        )
-        logger.info(f"[277] Updated Monday item {item_id} → {status}")
+        update_277_on_claims_board(claims_item_id, monday_status, rejection_reason)
+        logger.info(f"[277] Updated Claims Board item {claims_item_id} to {monday_status}")
 
     except Exception as e:
         logger.error(f"[277] Failed: {e}", exc_info=True)
+
+
+def _map_277_status(raw_status: str, report: dict) -> str:
+    """
+    Map raw status to Monday 277 Status label.
+    PRD 14: Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
+    A0 at provider/clearinghouse level = Stedi; A1 at claim level = Payer
+    """
+    try:
+        payer_cat = (
+            report.get("transactions", [{}])[0]
+            .get("payers", [{}])[0]
+            .get("claimStatusTransactions", [{}])[0]
+            .get("providerClaimStatuses", [{}])[0]
+            .get("providerStatuses", [{}])[0]
+            .get("healthCareClaimStatusCategoryCode", "")
+        )
+    except Exception:
+        payer_cat = ""
+
+    if raw_status == "Accepted":
+        return "Stedi Accepted" if payer_cat == "A0" else "Payer Accepted"
+    elif raw_status == "Rejected":
+        return "Stedi Rejected" if payer_cat == "A0" else "Payer Rejected"
+    return "Payer Accepted"
 
 
 def parse_277_status(report: dict) -> tuple:
@@ -216,12 +237,24 @@ def parse_277_status(report: dict) -> tuple:
             status = "Pending"
             rejection_reason = status_value
 
-        logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number}")
-        return status, rejection_reason, patient_account_number
+        # Also extract claim_id (claimTransactionBatchNumber) for fallback lookup
+        claim_id = ""
+        try:
+            claim_id = (
+                report.get("transactions", [{}])[0]
+                .get("payers", [{}])[0]
+                .get("claimStatusTransactions", [{}])[0]
+                .get("claimTransactionBatchNumber", "")
+            )
+        except Exception:
+            pass
+
+        logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number} | claim_id={claim_id}")
+        return status, rejection_reason, patient_account_number, claim_id
 
     except Exception as e:
         logger.error(f"[277] parse failed: {e}")
-        return "Unknown", "", ""
+        return "Unknown", "", "", ""
 
 #
 # def find_order_item_by_pcn(patient_control_number: str) -> str:

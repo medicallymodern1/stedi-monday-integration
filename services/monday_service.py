@@ -265,6 +265,44 @@ def create_claims_board_item(order_item: dict, claim_id: str, payer_name: str = 
 
     return new_item_id
 
+def update_eligibility_data(item_id: str, data: dict) -> None:
+    board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
+
+    mutation = """
+    mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(
+        item_id: $itemId,
+        board_id: $boardId,
+        column_id: $columnId,
+        value: $value
+      ) { id }
+    }
+    """
+
+    # 👉 Map your fields → Monday column IDs
+    field_map = {
+        "eligibility_active": "text_elig_active",     # UPDATE THIS
+        "eligibility_plan_name": "text_elig_plan",    # UPDATE THIS
+        "eligibility_error_description": "text_elig_error",  # UPDATE THIS
+    }
+
+    for field, column_id in field_map.items():
+        value = data.get(field, "")
+
+        if value is None:
+            continue
+
+        try:
+            run_query(mutation, {
+                "itemId": str(item_id),
+                "boardId": str(board_id),
+                "columnId": column_id,
+                "value": f'"{value}"',
+            })
+            logger.info(f"Eligibility: set {field} = {value}")
+        except Exception as e:
+            logger.warning(f"Failed to update {field}: {e}")
+
 def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> None:
     """
     Populate ERA payment data onto a Claims Board item.
@@ -325,24 +363,24 @@ def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> Non
 # Based on Claims Board subitem columns fetched
 SUBITEM_ERA_COLUMN_MAP = {
     # ERA field name         → (column_id,              type)
-    "Primary Paid":          ("numeric_mm1czbyg",       "number"),  # Primary Paid
+    "Primary Paid":          ("numeric_mm11v6th",       "number"),  # Primary Paid
     "Raw Service Date":      ("date_mm11hscn",          "date"),    # Service Date
-    "Raw Line Item Charge":  ("numeric_mm11v6th",       "number"),  # Charge Amount
+    "Raw Line Item Charge":  ("numeric_mm1gg3pj",       "number"),  # Charge Amount
     "Patient Control #":     ("text_mm16qhea",          "text"),    # Patient Control #
     "Claim Status Code":     ("text_mm1gzsan",          "text"),    # Claim Status Code
     "Raw Line Control #":    ("text_mm1g4yd9",          "text"),    # Line Item Control #
-    "Raw Allowed Actual":    ("numeric_mm1gg3pj",       "number"),  # Allowed Actual
-    "Parsed PR Amount":      ("numeric_mm1gtdts",       "number"),  # Parsed PR Amount
-    "Parsed Deductible":     ("numeric_mm1gredn",       "number"),  # Parsed Deductible
-    "Parsed Coinsurance":    ("numeric_mm1g3nvh",       "number"),  # Parsed Coinsurance
-    "Parsed Copay":          ("numeric_mm11aqr1",       "number"),  # Parsed Copay
-    "Parsed Other PR":       ("numeric_mm1gtd3e",       "number"),  # Parsed Other PR
-    "Parsed CO Amount":      ("numeric_mm1g48c",        "number"),  # Parsed CO Amount
-    "Parsed CO-45":          ("numeric_mm1gken",        "number"),  # Parsed CO-45
-    "Parsed CO-253":         ("numeric_mm1gt3ky",       "number"),  # Parsed CO-253
-    "Parsed Other CO":       ("numeric_mm1g3vgp",       "number"),  # Parsed Other CO
-    "Parsed OA Amount":      ("numeric_mm1grbc3",       "number"),  # Parsed OA
-    "Parsed PI Amount":      ("numeric_mm1gh22d",       "number"),  # Parsed PI
+    "Raw Allowed Actual":    ("numeric_mm1gtdts",       "number"),  # Allowed Actual
+    "Parsed PR Amount":      ("numeric_mm1gredn",       "number"),  # Parsed PR Amount
+    "Parsed Deductible":     ("numeric_mm1g3nvh",       "number"),  # Parsed Deductible
+    "Parsed Coinsurance":    ("numeric_mm11aqr1",       "number"),  # Parsed Coinsurance
+    "Parsed Copay":          ("numeric_mm1gtd3e",       "number"),  # Parsed Copay
+    "Parsed Other PR":       ("numeric_mm1g48c",       "number"),  # Parsed Other PR
+    "Parsed CO Amount":      ("numeric_mm1gken",        "number"),  # Parsed CO Amount
+    "Parsed CO-45":          ("numeric_mm1gt3ky",        "number"),  # Parsed CO-45
+    "Parsed CO-253":         ("numeric_mm1g3vgp",       "number"),  # Parsed CO-253
+    "Parsed Other CO":       ("numeric_mm1grbc3",       "number"),  # Parsed Other CO
+    "Parsed OA Amount":      ("numeric_mm1gh22d",       "number"),  # Parsed OA
+    "Parsed PI Amount":      ("numeric_mm1gqkvz",       "number"),  # Parsed PI
     "Parsed Remark Codes":   ("text_mm1g6tw3",          "text"),    # Remark Codes
     "Parsed Remark Text":    ("long_text_mm1ggyz6",     "long_text"), # Remark Text
     "Parsed Adj Codes":      ("text_mm1gt1dh",          "text"),    # Adjustment Codes
@@ -388,6 +426,62 @@ SUBITEM_ERA_COLUMN_MAP = {
 #             logger.info(f"Stored claim_id={claim_id} on order item {item_id}")
 #         except Exception as e:
 #             logger.warning(f"Failed to store claim_id: {e}")
+
+def update_277_on_claims_board(item_id: str, status: str, rejection_reason: str = "") -> None:
+    """
+    Update 277 Status and 277 Rejected Reason on Claims Board item.
+    PRD Section 14 status values:
+      Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
+    """
+    board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
+
+    # Confirmed column IDs from Claims Board export
+    STATUS_277_COL = "color_mm1z1pb2"   # 277 Status  (status)
+    REASON_277_COL = "text_mm1zsp2x"    # 277 Rejected Reason  (text)
+
+    STATUS_INDEX = {
+        "Stedi Accepted": 0,
+        "Stedi Rejected": 1,
+        "Payer Accepted": 2,
+        "Payer Rejected": 3,
+    }
+
+    import json as _json
+    mutation = """
+    mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(
+        item_id: $itemId, board_id: $boardId,
+        column_id: $columnId, value: $value
+      ) { id }
+    }
+    """
+
+    idx = STATUS_INDEX.get(status)
+    if idx is not None:
+        try:
+            run_query(mutation, {
+                "itemId":   str(item_id),
+                "boardId":  str(board_id),
+                "columnId": STATUS_277_COL,
+                "value":    _json.dumps({"index": idx}),
+            })
+            logger.info(f"[277] Updated 277 Status={status} on item {item_id}")
+        except Exception as e:
+            logger.warning(f"[277] Failed to update 277 Status: {e}")
+    else:
+        logger.warning(f"[277] Unknown status value: {status!r} — skipped")
+
+    # Write rejection reason on reject, clear it on accept
+    reason_value = rejection_reason if "Rejected" in status else ""
+    try:
+        run_query(mutation, {
+            "itemId":   str(item_id),
+            "boardId":  str(board_id),
+            "columnId": REASON_277_COL,
+            "value":    _json.dumps(reason_value),
+        })
+    except Exception as e:
+        logger.warning(f"[277] Failed to update 277 Rejected Reason: {e}")
 
 def _get_column_value(item_id: str, column_id: str) -> str:
     """Read a single column value from an Order Board item"""

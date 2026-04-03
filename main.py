@@ -37,6 +37,10 @@ from fastapi import FastAPI, Request
 
 from routes.monday_webhook import router as monday_router
 from routes.stedi_webhook import router as stedi_router
+from routes.eligibility_webhook import router as eligibility_router
+from routes.order_webhook import router as order_router
+from routes.claims_webhook import router as claims_router
+
 
 # ─── Load env ─────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -58,6 +62,9 @@ app = FastAPI(
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(monday_router, prefix="/monday", tags=["Monday"])
 app.include_router(stedi_router, prefix="/stedi", tags=["Stedi"])
+app.include_router(order_router,  prefix="/order",  tags=["Order"])
+app.include_router(claims_router, prefix="/claims", tags=["Claims"])
+app.include_router(eligibility_router, prefix="/eligibility", tags=["Eligibility"])
 
 
 # ─── Health check ─────────────────────────────────────────────────────────────
@@ -101,6 +108,7 @@ async def test_era_to_monday(claims_item_id: str, request: Request):
 
     body = await request.body()
     era_rows = parse_era_from_string(body.decode())
+    print(era_rows)
 
     if not era_rows:
         return {"error": "No rows parsed — check JSON format"}
@@ -119,6 +127,30 @@ async def test_era_to_monday(claims_item_id: str, request: Request):
         "service_lines": len(summary.get("children", [])),
     }
 
+@app.post("/test/create-claims-from-order/{item_id}", tags=["Testing"])
+async def test_create_claims_from_order(item_id: str):
+    """
+    Stage A test: reads Order Board item → creates Claims Board items + subitems
+    without needing the Monday webhook trigger.
+    """
+    from routes.order_webhook import get_order_item
+    from services.claim_board_service import create_claims_board_items_from_order
+
+    order_item = get_order_item(item_id)
+    created = create_claims_board_items_from_order(order_item)
+    return {"created_claims_board_items": created}
+
+
+@app.post("/test/submit-from-claims/{item_id}", tags=["Testing"])
+async def test_submit_from_claims(item_id: str):
+    """
+    Stage B test: reads Claims Board item + subitems → builds payload → submits to Stedi.
+    Use this before setting up the Monday webhook trigger.
+    """
+    from services.claims_submission_service import submit_from_claims_board
+    await submit_from_claims_board(item_id)
+    return {"status": "submitted", "claims_item_id": item_id}
+
 
 @app.post("/test/835-sample", tags=["Testing"])
 async def test_835_sample(request: Request):
@@ -131,6 +163,7 @@ async def test_835_sample(request: Request):
     Handles both formats:
       - Flat single-claim:  { "claimPaymentInfo": {...}, "serviceLines": [...] }
       - Full 835 envelope:  { "financialInformation": {...}, "claimPayments": [...] }
+
 
     Does NOT write to Monday — just returns parsed output for inspection.
     Usage: POST /test/835-sample  with raw Stedi 835 JSON as body
@@ -238,21 +271,26 @@ async def test_835_manual(transaction_id: str):
 
 # ─── Debug / utility endpoints ────────────────────────────────────────────────
 
-@app.get("/test/claims-subitem-columns", tags=["Debug"])
-async def get_claims_subitem_columns():
-    """Get subitem column IDs from Claims Board"""
+@app.get("/test/claims-columns", tags=["Debug"])
+async def get_claims_columns():
     from services.monday_service import run_query
+    import os
+
     claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
+
     query = """
     query ($boardId: ID!) {
       boards(ids: [$boardId]) {
-        items_page(limit: 1) {
+        columns {
+          id
+          title
+          type
+        }
+        items_page(limit: 5) {
           items {
             subitems {
-              id
               column_values {
                 id
-                title: id
                 type
               }
             }
@@ -261,8 +299,41 @@ async def get_claims_subitem_columns():
       }
     }
     """
+
     result = run_query(query, {"boardId": claims_board_id})
-    return result
+
+    boards = result.get("data", {}).get("boards", [])
+    if not boards:
+        return {"error": "Board not found"}
+
+    board = boards[0]
+
+    # ✅ Parent columns (correct)
+    parent_columns = board.get("columns", [])
+
+    # ✅ Extract subitem columns dynamically
+    subitem_column_map = {}
+
+    items = board.get("items_page", {}).get("items", [])
+    for item in items:
+        for sub in item.get("subitems", []):
+            for col in sub.get("column_values", []):
+                col_id = col.get("id")
+                col_type = col.get("type")
+
+                if col_id and col_id not in subitem_column_map:
+                    subitem_column_map[col_id] = {
+                        "id": col_id,
+                        "title": col_id,  # fallback (real title not available here)
+                        "type": col_type
+                    }
+
+    subitem_columns = list(subitem_column_map.values())
+
+    return {
+        "parent_columns": parent_columns,
+        "subitem_columns": subitem_columns
+    }
 
 
 @app.post("/submit-test-claim", tags=["Testing"])
@@ -418,3 +489,151 @@ async def get_order_status_settings():
     board_id = os.getenv("MONDAY_ORDER_BOARD_ID")
     result = get_column_settings(board_id, "status")
     return result
+
+@app.get("/test/onboarding-board-columns", tags=["Testing"])
+async def get_onboarding_board_columns():
+    """Get all column IDs from the New Onboarding Board"""
+    from services.monday_service import run_query
+    board_id = os.getenv("MONDAY_ONBOARDING_BOARD_ID")
+    query = """
+    query ($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        columns { id title type }
+      }
+    }
+    """
+    result = run_query(query, {"boardId": board_id})
+    cols = result.get("data", {}).get("boards", [{}])[0].get("columns", [])
+    return [{"id": c["id"], "title": c["title"], "type": c["type"]} for c in cols]
+
+
+@app.post("/test/eligibility/{item_id}", tags=["Testing"])
+async def test_eligibility_dry_run(item_id: str):
+    """
+    Dry run: fetch item, build payload, run eligibility, return results.
+    Does NOT write to Monday — for testing only.
+    """
+    from routes.eligibility_webhook import fetch_onboarding_item
+    from stedi_eligibility import run_parse_and_build_monday_writeback
+
+    try:
+        row = fetch_onboarding_item(item_id)
+        writeback = run_parse_and_build_monday_writeback(
+            row,
+            api_key=os.getenv("STEDI_API_KEY"),
+        )
+        return {
+            "status": "success",
+            "item_id": item_id,
+            "input_row": row,
+            "eligibility_results": writeback,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "item_id": item_id,
+            "error": str(e),
+        }
+
+
+@app.post("/test/eligibility-payload/{item_id}", tags=["Testing"])
+async def test_eligibility_payload_only(item_id: str):
+    """
+    Build and return Stedi payload without sending it.
+    Use to verify payload is correct before making a real API call.
+    """
+    from routes.eligibility_webhook import fetch_onboarding_item
+    from stedi_eligibility import build_eligibility_payload_from_monday_row
+
+    try:
+        row = fetch_onboarding_item(item_id)
+        print("row:", row)
+        payload = build_eligibility_payload_from_monday_row(row)
+        return {"status": "ok", "payload": payload}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.post("/test/full-claim-flow/{item_id}", tags=["Testing"])
+async def test_full_claim_flow(item_id: str):
+    """
+    FULL FLOW:
+    1. Submit claim
+    2. Wait
+    3. Fetch ERA manually
+    4. Parse
+    5. Write to Monday
+    """
+
+    import time
+
+    from services.monday_service import (
+        get_order_item,
+        update_claim_status,
+        populate_era_data_on_claims_item,
+    )
+    from services.claim_builder_service import build_claims_from_monday_item
+    from services.stedi_service import submit_claim, get_era_as_835_file
+    from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
+
+    try:
+        # Step 1: Get item
+        order_data = get_order_item(item_id)
+
+        payloads = build_claims_from_monday_item(order_data)
+
+        results = []
+
+        for payload in payloads:
+            # Step 2: Submit claim
+            result = submit_claim(payload)
+
+            claim_id = result.get("claim_id")
+            transaction_id = result.get("transaction_id")
+
+            update_claim_status(item_id, claim_id=claim_id, status="Submitted")
+
+            # add_update(item_id, f"✅ Claim Submitted\nTxn: {transaction_id}")
+
+            # Step 3: WAIT (VERY IMPORTANT)
+            time.sleep(5)  # give Stedi time
+
+            # Step 4: Fetch ERA manually
+            era_content = get_era_as_835_file(transaction_id)
+
+            if not era_content:
+                # add_update(item_id, "⚠️ No ERA returned yet")
+                continue
+
+            # Step 5: Parse
+            era_rows = parse_era_from_string(era_content)
+
+            if not era_rows:
+                # add_update(item_id, "❌ ERA parsing failed")
+                continue
+
+            # Step 6: Write to Monday
+            for era_row in era_rows:
+                summary = summarize_era_row_for_monday(era_row)
+
+                populate_era_data_on_claims_item(item_id, summary)
+
+            # add_update(item_id, "💰 ERA processed successfully")
+
+            results.append({
+                "claim_id": claim_id,
+                "transaction_id": transaction_id,
+                "era_rows": len(era_rows)
+            })
+
+        return {
+            "status": "success",
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Full flow failed: {e}", exc_info=True)
+
+        return {
+            "status": "error",
+            "error": str(e)
+        }

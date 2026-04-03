@@ -74,71 +74,23 @@ def lookup_payer_name(payer_id: str) -> str:
 
 import json
 
-# def submit_claim(payload: dict) -> dict:
-#     """
-#     Submit a claim JSON to Stedi API.
-#     Returns claim_id and transaction_id.
-#     """
-#     payer = payload.get("tradingPartnerName", "Unknown")
-#     logger.info(f"Submitting claim to Stedi: payer={payer}")
-#
-#     logger.info(f"STEDI CLAIM PAYLOAD:\n{json.dumps(payload, indent=2)}")
-#     # Return mock if no API key yet
-#     if not os.getenv("STEDI_API_KEY"):
-#         logger.warning("STEDI_API_KEY not set — returning mock response")
-#         return {
-#             "claim_id": "MOCK_CLAIM_123",
-#             "transaction_id": "MOCK_TXN_456",
-#             "status": "mock_submitted",
-#         }
-#
-#     # Use patientControlNumber as idempotency key to prevent duplicates
-#     patient_control_number = (
-#         payload.get("claimInformation", {})
-#         .get("patientControlNumber", "")
-#     )
-#
-#     try:
-#         response = requests.post(
-#             STEDI_CLAIMS_URL,
-#             json=payload,
-#             headers=get_stedi_headers(idempotency_key=patient_control_number),
-#             timeout=30,
-#         )
-#
-#         logger.info(f"Stedi response status: {response.status_code}")
-#
-#         response.raise_for_status()
-#         result = response.json()
-#
-#         # Extract claim identifiers from response
-#         claim_id = (
-#             result.get("claimReference", {}).get("claimId") or
-#             result.get("id") or
-#             result.get("transactionId") or
-#             ""
-#         )
-#         transaction_id = (
-#             result.get("claimReference", {}).get("transactionId") or
-#             result.get("transactionId") or
-#             ""
-#         )
-#
-#         logger.info(f"Claim submitted: claim_id={claim_id}, transaction_id={transaction_id}")
-#
-#         return {
-#             "claim_id": claim_id,
-#             "transaction_id": transaction_id,
-#             "status": "submitted",
-#             "raw": result,
-#         }
-#
-#     except requests.exceptions.HTTPError as e:
-#         logger.error(f"Stedi HTTP error: {e.response.status_code} - {e.response.text}")
-#         raise
-#     except Exception as e:
-#         logger.error(f"Stedi submission failed: {e}", exc_info=True)
-#         raise
+def process_test_era(transaction_id: str) -> dict:
+    from services.stedi_service import get_era_as_835_file
+    from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
+
+    # Step 1: Fetch ERA
+    era_content = get_era_as_835_file(transaction_id)
+
+    if not era_content:
+        raise ValueError("No ERA returned from Stedi")
+
+    # Step 2: Parse
+    era_rows = parse_era_from_string(era_content)
+
+    if not era_rows:
+        raise ValueError("ERA parsing failed")
+
+    return era_rows
 
 def submit_claim(payload: dict) -> dict:
     """Submit a claim JSON to Stedi API."""

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+                  #!/usr/bin/env python3
 """
 EraParser.py (X12 835 only)
 
