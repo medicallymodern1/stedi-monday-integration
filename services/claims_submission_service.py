@@ -41,6 +41,7 @@ CLAIMS_PARENT_COL = {
     "auth":           "text_mkwrb2t9",
     "claim_id":         "text_mm1zpzrs",
     "claim_sent_date":  "date_mm14rk8d",
+    "pcn":              "text_mkwzbcme",   # Patient Control Number — used by 277 webhook to find this item
     "status_277":       "color_mm1z1pb2",
     "reason_277":       "text_mm1zsp2x",
     # Test field — read to determine usageIndicator (PRD 12.1)
@@ -338,25 +339,50 @@ def _write_column_safe(item_id, col_id, value, label):
         logger.warning(f"[SUBMIT] Failed to write {label}: {e}")
 
 
-def _write_submission_outputs(item_id: str, claim_id: str, inline_277: str = "Pending") -> None:
-    """PRD 13/FR11: Write Claim ID, Claim Sent Date, 277 Status. Never touch Primary Status."""
+def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
+                               inline_277: str = "Pending") -> None:
+    """PRD 13/FR11: Write Claim ID, PCN, Claim Sent Date, 277 Status. Never touch Primary Status."""
     from datetime import date as _date
     today = _date.today().isoformat()
 
     _write_column_safe(item_id, CLAIMS_PARENT_COL.get("claim_id"),
                        json.dumps(claim_id), f"Claim ID={claim_id}")
+    # Write PCN so the 277 webhook can find this Claims Board item later by PCN
+    if pcn:
+        _write_column_safe(item_id, CLAIMS_PARENT_COL.get("pcn"),
+                           json.dumps(pcn), f"PCN={pcn}")
     _write_column_safe(item_id, CLAIMS_PARENT_COL.get("claim_sent_date"),
                        json.dumps({"date": today}), f"Claim Sent Date={today}")
 
-    STATUS_277_INDEX = {"Stedi Accepted": 0, "Stedi Rejected": 1,
-                        "Payer Accepted": 2, "Payer Rejected": 3}
-    status_277 = {"Accepted": "Payer Accepted", "Rejected": "Payer Rejected"}.get(
-        inline_277, "Stedi Accepted")
-    idx = STATUS_277_INDEX.get(status_277)
-    if idx is not None:
-        _write_column_safe(item_id, CLAIMS_PARENT_COL.get("status_277"),
-                           json.dumps({"index": idx}), f"277 Status={status_277}")
-    reason = "" if "Accepted" in status_277 else "Payer rejected — see 277 webhook for details"
+    # Index values confirmed by client against live Claims Board status column
+    STATUS_277_INDEX = {
+        "Payer Accepted": 0,
+        "Stedi Accepted": 1,
+        "Payer Rejected": 2,
+        "Stedi Rejected": 3,
+    }
+
+    # inline_277 values come from parse_inline_277_status() in stedi_service.py
+    # which now returns the full label ("Stedi Accepted", "Payer Accepted", etc.)
+    # directly. Map any legacy plain "Accepted"/"Rejected" values for safety.
+    INLINE_277_TO_LABEL = {
+        "Stedi Accepted": "Stedi Accepted",
+        "Payer Accepted": "Payer Accepted",
+        "Stedi Rejected": "Stedi Rejected",
+        "Payer Rejected": "Payer Rejected",
+        # Legacy plain values from old parse_inline_277_status — keep as fallback
+        "Accepted":       "Stedi Accepted",  # inline 277 at submission = clearinghouse level
+        "Rejected":       "Stedi Rejected",
+        "Pending":        None,              # don't write anything for Pending
+    }
+
+    status_277 = INLINE_277_TO_LABEL.get(inline_277)
+    if status_277 is not None:
+        idx = STATUS_277_INDEX.get(status_277)
+        if idx is not None:
+            _write_column_safe(item_id, CLAIMS_PARENT_COL.get("status_277"),
+                               json.dumps({"index": idx}), f"277 Status={status_277}")
+    reason = "" if (status_277 and "Accepted" in status_277) else ""
     _write_column_safe(item_id, CLAIMS_PARENT_COL.get("reason_277"),
                        json.dumps(reason), "277 Rejected Reason")
 
@@ -389,4 +415,6 @@ async def submit_from_claims_board(item_id: str) -> None:
     logger.info(f"[SUBMIT] Submitted: claim_id={claim_id} | pcn={pcn}")
 
     inline_277 = response.get("inline_277_status", "Pending")
-    _write_submission_outputs(item_id, claim_id, inline_277)
+    # inline_277 is a best-effort early status — the 277 webhook will overwrite
+    # it with the correct value once it arrives and finds this item via PCN.
+    _write_submission_outputs(item_id, claim_id, pcn=pcn, inline_277=inline_277)

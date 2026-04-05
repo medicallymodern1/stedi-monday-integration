@@ -304,6 +304,24 @@ def safe_int(val) -> int:
     except (ValueError, TypeError):
         return 0
 
+def safe_claim_qty(cqty_str, fallback: int) -> int:
+    """
+    Convert a resolved claim quantity string to int.
+
+    Replaces the brittle `int(cqty) if str(cqty).isdigit() else fallback` pattern.
+    Handles all formats returned by claim_assumptions resolvers:
+      "1"   -> 1         (whole number string)
+      "1.0" -> 1         (float string -- isdigit() would have failed here!)
+      "1.5" -> 1         (fractional -> truncate, still a valid claim unit count)
+      ""    -> fallback  (resolver returned nothing -> use order qty as fallback)
+    """
+    try:
+        val = str(cqty_str).strip()
+        if not val:
+            return fallback
+        return int(float(val))
+    except (ValueError, TypeError):
+        return fallback
 
 def normalize_date_iso(value: str) -> str:
     """
@@ -597,7 +615,7 @@ def build_service_lines(cols: dict) -> list:
             "resolved_hcpc_code":  hcpc or "A4221",
             "resolved_modifiers":  mods,
             "line_order_quantity": total_infusion,
-            "line_claim_quantity": int(cqty) if str(cqty).isdigit() else total_infusion,
+            "line_claim_quantity": safe_claim_qty(cqty, total_infusion),
             "line_charge_amount":  charge,
             "line_est_pay":        "",
             "service_date":        dos,
@@ -617,7 +635,7 @@ def build_service_lines(cols: dict) -> list:
             "resolved_hcpc_code":  hcpc or "A4224",
             "resolved_modifiers":  mods,
             "line_order_quantity": cartridge_qty,
-            "line_claim_quantity": int(cqty) if str(cqty).isdigit() else cartridge_qty,
+            "line_claim_quantity": safe_claim_qty(cqty, cartridge_qty),
             "line_charge_amount":  charge,
             "line_est_pay":        "",
             "service_date":        dos,
@@ -637,11 +655,12 @@ def build_service_lines(cols: dict) -> list:
             "resolved_hcpc_code":  hcpc or "A4239",
             "resolved_modifiers":  mods,
             "line_order_quantity": cgm_sensor_qty,
-            "line_claim_quantity": int(cqty) if str(cqty).isdigit() else cgm_sensor_qty,
+            "line_claim_quantity": safe_claim_qty(cqty, cgm_sensor_qty),
             "line_charge_amount":  charge,
             "line_est_pay":        "",
             "service_date":        dos,
         })
+        # print(f"line_claim_quantity: {safe_claim_qty(cqty, cgm_sensor_qty)}")
         logger.info(f"[CLAIMS] CGM Sensors  hcpc={hcpc} cgm_type={cgm_type} order={cgm_sensor_qty} claim={cqty} charge={charge} mods={mods}")
 
     # ── CGM Monitor ───────────────────────────────────────────────────────────
@@ -668,31 +687,49 @@ def build_service_lines(cols: dict) -> list:
 
 # =============================================================================
 # GROUP LINES BY PAYER  (PRD 6.1)
+# Implements payer-split logic per Tanvi_Payer_Split_Logic_Handoff.docx
 # =============================================================================
 
-def group_lines_by_payer(cols: dict, lines: list) -> list:
-    payer_name = cols.get("primary_insurance", "")
-    payer_id   = resolve_payer_id(payer_name)
-    dos        = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
+# HCPC codes by product family — used for split routing
+_PUMP_HCPCS       = {"E0784"}
+_CGM_HCPCS        = {"A4239", "E2103"}
+_INFUSION_HCPCS   = {"A4224", "A4230", "A4231"}
+_CARTRIDGE_HCPCS  = {"A4225", "A4232"}
+_SUPPLY_HCPCS     = _INFUSION_HCPCS | _CARTRIDGE_HCPCS  # go to Medicaid on split
 
-    if not lines:
-        return []
+# Anthem JLJ plan names that trigger a split
+_ANTHEM_JLJ_MEDICAID_PLANS = {
+    "NEW YORK MEDICAID",
+    "NY SSI HARP",
+    "NY CHIP - STATE BILLING ONLY RISK",
+}
 
-    # Helper to find claim qty for a given resolved HCPC across all lines
+# Medicaid ID regex: exactly 2 letters + 5 digits + 1 letter  (e.g. AA12345B)
+_MEDICAID_ID_RE = re.compile(r"^[A-Za-z]{2}\d{5}[A-Za-z]$")
+
+# Stedi payer ID for NY Medicaid (MCDNY)
+_MEDICAID_PAYER_ID = "MCDNY"
+_MEDICAID_PAYER_NAME = "Medicaid"
+
+
+def _build_claim_group(cols: dict, lines: list, payer_name: str,
+                        payer_id: str, member_id: str, dos: str) -> dict:
+    """Build a single claim group dict from cols + a (possibly filtered) line list."""
+
     def _units_for(hcpc: str):
-        for l in lines:
-            if l.get("resolved_hcpc_code") == hcpc:
-                return l.get("line_claim_quantity")
+        for ln in lines:
+            if ln.get("resolved_hcpc_code") == hcpc:
+                return ln.get("line_claim_quantity")
         return None
 
-    return [{
+    return {
         "source_order_item_id":      cols.get("item_id"),
         "patient_name":              cols.get("name"),
         "dob":                       cols.get("dob", ""),
         "gender":                    cols.get("gender"),
         "patient_phone":             cols.get("phone"),
         "patient_address":           cols.get("patient_address"),
-        "member_id":                 cols.get("member_id"),
+        "member_id":                 member_id,
         "diagnosis_code":            cols.get("diagnosis_code"),
         "doctor_name":               cols.get("doctor_name"),
         "doctor_npi":                cols.get("doctor_npi"),
@@ -708,13 +745,13 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
         "resolved_primary_payor":    payer_name,
         "resolved_primary_payor_id": payer_id,
         "computed_dos":              dos,
-        # Qty fields
+        # Qty fields (always from original cols)
         "pump_order_qty":            cols.get("qty_pump"),
         "infusion_1_order_qty":      cols.get("qty_infusion_set_1"),
         "infusion_2_order_qty":      cols.get("qty_infusion_set_2"),
         "sensor_order_qty":          cols.get("qty_cgm_sensors"),
         "monitor_order_qty":         cols.get("qty_cgm_monitor"),
-        # Unit fields — derived from resolved service lines
+        # Unit fields — derived from this group's service lines
         "e0784_units":               _units_for("E0784"),
         "e2103_units":               _units_for("E2103"),
         "a4224_units":               _units_for("A4224"),
@@ -722,7 +759,100 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
         "a4230_units":               _units_for("A4230"),
         "a4232_units":               _units_for("A4232"),
         "service_lines":             lines,
-    }]
+    }
+
+
+def group_lines_by_payer(cols: dict, lines: list) -> list:
+    """
+    Route service lines into one or two claim groups based on payer split rules.
+
+    Rule 1 — Fidelis Medicaid:
+      Claim A: pump lines only  (primary payer)
+      Claim B: infusion + cartridge lines → Medicaid / MCDNY (if any exist)
+
+    Rule 2 — Anthem BCBS Medicaid (JLJ):
+      Split triggered if plan_name in approved list OR secondary_id matches Medicaid ID regex.
+      Claim A: pump + CGM lines  (primary payer)
+      Claim B: infusion + cartridge lines → Medicaid / MCDNY (if any exist)
+      No split → all lines on Anthem JLJ as single claim.
+
+    Default: single claim group on primary insurance.
+    """
+    payer_name = cols.get("primary_insurance", "")
+    payer_id   = resolve_payer_id(payer_name)
+    dos        = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
+    secondary_id = cols.get("secondary_id", "")
+    plan_name    = cols.get("plan_name", "")   # populated from subitem; see Open Question in handoff
+
+    if not lines:
+        return []
+
+    # ── Rule 1: Fidelis Medicaid ──────────────────────────────────────────────
+    if payer_name == "Fidelis Medicaid":
+        primary_lines = [ln for ln in lines if ln.get("resolved_hcpc_code") in _PUMP_HCPCS]
+        medicaid_lines = [ln for ln in lines if ln.get("resolved_hcpc_code") in _SUPPLY_HCPCS]
+
+        groups = []
+        if primary_lines:
+            groups.append(_build_claim_group(
+                cols, primary_lines, payer_name, payer_id,
+                cols.get("member_id", ""), dos,
+            ))
+        if medicaid_lines:
+            groups.append(_build_claim_group(
+                cols, medicaid_lines, _MEDICAID_PAYER_NAME, _MEDICAID_PAYER_ID,
+                secondary_id, dos,
+            ))
+
+        logger.info(
+            f"[CLAIMS] Fidelis Medicaid split: "
+            f"Claim A ({len(primary_lines)} pump lines), "
+            f"Claim B ({len(medicaid_lines)} supply lines)"
+        )
+        return groups
+
+    # ── Rule 2: Anthem BCBS Medicaid (JLJ) ───────────────────────────────────
+    if payer_name == "Anthem BCBS Medicaid (JLJ)":
+        plan_match = plan_name.strip().upper() in {p.upper() for p in _ANTHEM_JLJ_MEDICAID_PLANS}
+        medicaid_id_match = bool(_MEDICAID_ID_RE.match(secondary_id.strip())) if secondary_id else False
+
+        if plan_match or medicaid_id_match:
+            primary_lines  = [ln for ln in lines if ln.get("resolved_hcpc_code") in (_PUMP_HCPCS | _CGM_HCPCS)]
+            medicaid_lines = [ln for ln in lines if ln.get("resolved_hcpc_code") in _SUPPLY_HCPCS]
+
+            groups = []
+            if primary_lines:
+                groups.append(_build_claim_group(
+                    cols, primary_lines, payer_name, payer_id,
+                    cols.get("member_id", ""), dos,
+                ))
+            if medicaid_lines:
+                groups.append(_build_claim_group(
+                    cols, medicaid_lines, _MEDICAID_PAYER_NAME, _MEDICAID_PAYER_ID,
+                    secondary_id, dos,
+                ))
+
+            trigger = "plan_name" if plan_match else "medicaid_id_regex"
+            logger.info(
+                f"[CLAIMS] Anthem JLJ split triggered by {trigger}: "
+                f"Claim A ({len(primary_lines)} primary lines), "
+                f"Claim B ({len(medicaid_lines)} supply lines)"
+            )
+            return groups
+
+        else:
+            # No split — all lines stay on Anthem JLJ
+            logger.info("[CLAIMS] Anthem JLJ — no split condition met, single claim")
+            return [_build_claim_group(
+                cols, lines, payer_name, payer_id,
+                cols.get("member_id", ""), dos,
+            )]
+
+    # ── Default: single claim group on primary payer ──────────────────────────
+    return [_build_claim_group(
+        cols, lines, payer_name, payer_id,
+        cols.get("member_id", ""), dos,
+    )]
 
 # =============================================================================
 # MAIN ENTRY POINT — Stage A

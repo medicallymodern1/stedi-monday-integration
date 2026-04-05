@@ -172,12 +172,27 @@ async def handle_277_event(transaction_id: str, detail: dict) -> None:
 
 def _map_277_status(raw_status: str, report: dict) -> str:
     """
-    Map raw status to Monday 277 Status label.
-    PRD 14: Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
-    A0 at provider/clearinghouse level = Stedi; A1 at claim level = Payer
+    Map raw 277 status to Monday 277 Status label.
+    PRD 14 values: Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
+
+    Logic:
+    - Check providerClaimStatuses (clearinghouse/Stedi level) for category code.
+    - Also check ALL informationStatuses across every claim for any A0 code,
+      which signals clearinghouse-level acceptance regardless of claim outcome.
+    - A0 at any level = Stedi decision. A1/A2/A3/other = Payer decision.
+    - If providerStatuses is missing or empty, fall back to checking whether
+      the x12 envelope-level code indicates clearinghouse processing.
+
+    Why this matters:
+    - Stedi test payer returns A1 at claim level (informationStatuses) but
+      may not populate providerStatuses at all.
+    - Without this fallback, a missing providerStatuses causes the code to
+      always return "Payer Accepted/Rejected" instead of "Stedi Accepted/Rejected".
     """
+    # ── Step 1: Check providerClaimStatuses (clearinghouse level) ────────────
+    provider_cat = ""
     try:
-        payer_cat = (
+        provider_cat = (
             report.get("transactions", [{}])[0]
             .get("payers", [{}])[0]
             .get("claimStatusTransactions", [{}])[0]
@@ -186,13 +201,43 @@ def _map_277_status(raw_status: str, report: dict) -> str:
             .get("healthCareClaimStatusCategoryCode", "")
         )
     except Exception:
-        payer_cat = ""
+        provider_cat = ""
+
+    # ── Step 2: Scan ALL informationStatuses for any A0 code ─────────────────
+    # A0 = Acknowledged/Accepted at clearinghouse (Stedi) level
+    has_any_a0 = False
+    try:
+        claim_status_txns = (
+            report.get("transactions", [{}])[0]
+            .get("payers", [{}])[0]
+            .get("claimStatusTransactions", [{}])
+        )
+        for cst in claim_status_txns:
+            for csd in cst.get("claimStatusDetails", []):
+                for pcsd in csd.get("patientClaimStatusDetails", []):
+                    for claim in pcsd.get("claims", []):
+                        for ics in claim.get("claimStatus", {}).get("informationClaimStatuses", []):
+                            for info in ics.get("informationStatuses", []):
+                                if info.get("healthCareClaimStatusCategoryCode", "") == "A0":
+                                    has_any_a0 = True
+    except Exception:
+        pass
+
+    # ── Step 3: Determine if this is a Stedi-level or Payer-level decision ───
+    is_stedi_level = (provider_cat == "A0") or has_any_a0
+
+    logger.info(
+        f"[277] _map_277_status: raw_status={raw_status!r} "
+        f"provider_cat={provider_cat!r} has_any_a0={has_any_a0} "
+        f"is_stedi_level={is_stedi_level}"
+    )
 
     if raw_status == "Accepted":
-        return "Stedi Accepted" if payer_cat == "A0" else "Payer Accepted"
+        return "Stedi Accepted" if is_stedi_level else "Payer Accepted"
     elif raw_status == "Rejected":
-        return "Stedi Rejected" if payer_cat == "A0" else "Payer Rejected"
-    return "Payer Accepted"
+        return "Stedi Rejected" if is_stedi_level else "Payer Rejected"
+
+    return "Payer Accepted"  # fallback for Pending/Unknown
 
 
 def parse_277_status(report: dict) -> tuple:
@@ -226,13 +271,22 @@ def parse_277_status(report: dict) -> tuple:
         category_code = info_statuses.get("healthCareClaimStatusCategoryCode", "")
         status_value  = info_statuses.get("statusCodeValue", "")
 
-        # A1 = Accepted, A2 = Not Found, A3 = Rejected, A4 = Pending
-        if category_code == "A1":
+        # A0 = Acknowledged at clearinghouse (Stedi accepted, forwarded to payer)
+        # A1 = Accepted by payer
+        # A2 = Not found / pending at payer (NOT the same as rejected — claim received by Stedi)
+        # A3 = Rejected by payer
+        # A4 = Pending
+        if category_code in ("A1", "A0"):
             status = "Accepted"
             rejection_reason = ""
-        elif category_code in ("A2", "A3"):
+        elif category_code == "A3":
             status = "Rejected"
             rejection_reason = status_value
+        elif category_code == "A2":
+            # A2 = payer has not yet found the claim — Stedi received it, payer pending
+            # Treat as Accepted at Stedi level (not a rejection)
+            status = "Accepted"
+            rejection_reason = ""
         else:
             status = "Pending"
             rejection_reason = status_value

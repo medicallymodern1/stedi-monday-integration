@@ -31,15 +31,19 @@ ENVIRONMENT VARIABLES (set in .env):
 
 import logging
 import os
+import json
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from routes.monday_webhook import router as monday_router
 from routes.stedi_webhook import router as stedi_router
 from routes.eligibility_webhook import router as eligibility_router
 from routes.order_webhook import router as order_router
 from routes.claims_webhook import router as claims_router
+from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
+from services.monday_service import populate_era_data_on_claims_item
 
 
 # ─── Load env ─────────────────────────────────────────────────────────────────
@@ -197,6 +201,67 @@ async def test_835_sample(request: Request):
         "results": results,
     }
 
+@app.post("/era/{claims_item_id}")
+async def test_era_to_monday(claims_item_id: str, request: Request):
+    """
+    Paste a Stedi 835 JSON body and it will:
+    1. Parse it using your existing parse_era_from_string()
+    2. Write parent + subitem columns using populate_era_data_on_claims_item()
+    3. Return what was parsed so you can verify every field
+    """
+
+    # Step 1: Read body
+    try:
+        raw = await request.body()
+        era_json = json.loads(raw)
+    except Exception as e:
+        return JSONResponse({"error": f"Invalid JSON: {e}"}, status_code=400)
+
+    # Step 2: Parse using your existing parser
+    era_rows = parse_era_from_string(json.dumps(era_json))
+
+    if not era_rows:
+        return JSONResponse({
+            "error": "Parsing returned no rows. Check JSON format.",
+            "hint": "Expected 'transactions' key (Stedi API) or 'claimPaymentInfo' key (flat)"
+        }, status_code=422)
+
+    logger.info(f"[ERA TEST] Parsed {len(era_rows)} row(s) — writing to item {claims_item_id}")
+
+    results = []
+
+    # Step 3: Write each row to Monday using your existing function
+    for i, era_row in enumerate(era_rows, 1):
+        summary = summarize_era_row_for_monday(era_row)
+        try:
+            populate_era_data_on_claims_item(claims_item_id, summary)
+            logger.info(f"[ERA TEST] Row {i} written to Monday item {claims_item_id}")
+            status = "written_to_monday"
+        except Exception as e:
+            logger.error(f"[ERA TEST] Row {i} failed: {e}", exc_info=True)
+            status = f"error: {e}"
+
+        results.append({
+            "row":    i,
+            "status": status,
+            # Show exactly what was parsed so you can verify each field
+            "parent_fields_written": {
+                "raw_patient_control_num":    summary.get("raw_patient_control_num"),
+                "raw_payer_claim_control":    summary.get("raw_payer_claim_control"),
+                "primary_paid":               summary.get("primary_paid"),
+                "pr_amount":                  summary.get("pr_amount"),
+                "primary_status":             summary.get("primary_status"),
+                "paid_date":                  summary.get("paid_date"),
+                "check_number":               summary.get("check_number"),
+            },
+            "service_lines": summary.get("children", []),
+        })
+
+    return JSONResponse({
+        "claims_item_id": claims_item_id,
+        "rows_parsed":    len(era_rows),
+        "results":        results,
+    })
 
 @app.post("/test/835/{transaction_id}", tags=["Testing"])
 async def test_835_manual(transaction_id: str):

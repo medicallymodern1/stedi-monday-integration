@@ -569,21 +569,63 @@ def post_claim_update_to_monday(
         logger.warning(f"Failed to post Monday update: {e}")
 
 
-def populate_era_service_line_subitems(claims_item_id: str, children: list) -> None:
+def _get_existing_subitems(claims_item_id: str) -> dict:
     """
-    Create subitems on Claims Board item for each ERA service line.
-    One subitem per HCPCS code with all parsed ERA fields.
+    Fetch all existing subitems for a Claims Board item.
+    Returns dict keyed by HCPC code → {subitem_id, subitem_board_id}
+    HCPC code is read from column color_mm1cdvq8 (the HCPCS dropdown on the subitem).
     """
-    claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
-
-    create_mutation = """
-    mutation CreateSubitem($parentId: ID!, $itemName: String!) {
-      create_subitem(parent_item_id: $parentId, item_name: $itemName) {
-        id
-        board { id }
+    query = """
+    query GetSubitems($itemId: ID!) {
+      items(ids: [$itemId]) {
+        subitems {
+          id
+          name
+          board { id }
+          column_values { id text }
+        }
       }
     }
     """
+    try:
+        result = run_query(query, {"itemId": str(claims_item_id)})
+        subitems = (
+            result.get("data", {})
+            .get("items", [{}])[0]
+            .get("subitems", [])
+        )
+        existing = {}
+        for sub in subitems:
+            subitem_id       = sub.get("id", "")
+            subitem_board_id = sub.get("board", {}).get("id", "")
+            # HCPC code is stored in color_mm1cdvq8
+            hcpc = ""
+            for col in sub.get("column_values", []):
+                if col.get("id") == "color_mm1cdvq8":
+                    hcpc = col.get("text", "")
+                    break
+            if hcpc and subitem_id:
+                existing[hcpc] = {
+                    "subitem_id":       subitem_id,
+                    "subitem_board_id": subitem_board_id,
+                }
+                logger.info(f"  Found existing subitem: HCPC={hcpc} → id={subitem_id}")
+        return existing
+    except Exception as e:
+        logger.warning(f"Failed to fetch existing subitems: {e}")
+        return {}
+
+
+def populate_era_service_line_subitems(claims_item_id: str, children: list) -> None:
+    """
+    Populate ERA data into subitems on a Claims Board item.
+
+    Match logic:
+    - Look up existing subitems by HCPC code (color_mm1cdvq8)
+    - If a match is found → UPDATE that subitem in place (no new subitem created)
+    - If no match found → CREATE a new subitem named after the HCPC code
+    """
+    claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
 
     update_mutation = """
     mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
@@ -596,35 +638,52 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
     }
     """
 
+    create_mutation = """
+    mutation CreateSubitem($parentId: ID!, $itemName: String!) {
+      create_subitem(parent_item_id: $parentId, item_name: $itemName) {
+        id
+        board { id }
+      }
+    }
+    """
+
+    # Fetch all existing subitems once — keyed by HCPC code
+    existing_subitems = _get_existing_subitems(claims_item_id)
+
     for child in children:
-        hcpc_code = child.get("HCPC Code", "Unknown")
+        hcpc_code = child.get("HCPC Code", "")
 
         try:
-            # Create subitem named after HCPCS code
-            result = run_query(create_mutation, {
-                "parentId": str(claims_item_id),
-                "itemName": hcpc_code,
-            })
+            # ── Match to existing subitem by HCPC code ────────────────────────
+            if hcpc_code and hcpc_code in existing_subitems:
+                subitem_id       = existing_subitems[hcpc_code]["subitem_id"]
+                subitem_board_id = existing_subitems[hcpc_code]["subitem_board_id"]
+                logger.info(f"Matched existing subitem for HCPC={hcpc_code} → id={subitem_id}")
 
-            subitem_id = (
-                result.get("data", {})
-                .get("create_subitem", {})
-                .get("id", "")
-            )
-            subitem_board_id = (
-                result.get("data", {})
-                .get("create_subitem", {})
-                .get("board", {})
-                .get("id", "")
-            )
+            else:
+                # No match — create a new subitem
+                item_name = hcpc_code or "Unknown"
+                result = run_query(create_mutation, {
+                    "parentId": str(claims_item_id),
+                    "itemName": item_name,
+                })
+                subitem_id = (
+                    result.get("data", {})
+                    .get("create_subitem", {})
+                    .get("id", "")
+                )
+                subitem_board_id = (
+                    result.get("data", {})
+                    .get("create_subitem", {})
+                    .get("board", {})
+                    .get("id", "")
+                )
+                if not subitem_id or not subitem_board_id:
+                    logger.warning(f"Failed to create subitem for HCPC={hcpc_code}")
+                    continue
+                logger.info(f"Created new subitem for HCPC={hcpc_code} → id={subitem_id}")
 
-            if not subitem_id or not subitem_board_id:
-                logger.warning(f"Failed to create subitem for {hcpc_code}")
-                continue
-
-            logger.info(f"Created subitem {subitem_id} for {hcpc_code}")
-
-            # Map child ERA fields to subitem columns
+            # ── Write ERA fields into the subitem ─────────────────────────────
             fields = {
                 "Primary Paid":         child.get("Primary Paid"),
                 "Raw Service Date":     child.get("Raw Service Date"),
@@ -674,13 +733,13 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
                         "columnId": col_id,
                         "value":    formatted,
                     })
-                    logger.info(f"  Subitem {hcpc_code}: set {field_name} = {value}")
+                    logger.info(f"  Subitem HCPC={hcpc_code}: set {field_name} = {value}")
 
                 except Exception as e:
-                    logger.warning(f"  Subitem {hcpc_code}: failed {field_name}: {e}")
+                    logger.warning(f"  Subitem HCPC={hcpc_code}: failed {field_name}: {e}")
 
         except Exception as e:
-            logger.warning(f"Failed to create subitem for {hcpc_code}: {e}")
+            logger.warning(f"Failed to process subitem for HCPC={hcpc_code}: {e}")
 
 def get_column_settings(board_id: str, column_id: str) -> dict:
     """Debug: Get column settings to find valid status labels"""
