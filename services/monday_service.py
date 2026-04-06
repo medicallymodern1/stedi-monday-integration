@@ -303,10 +303,69 @@ def update_eligibility_data(item_id: str, data: dict) -> None:
         except Exception as e:
             logger.warning(f"Failed to update {field}: {e}")
 
+# ── ERA Parent column map — confirmed from GET /test/claims-columns ───────────
+# Column IDs verified against Claims Board column export (document index 2).
+ERA_PARENT_COLUMN_MAP = {
+    # field key                      column_id            type      # Board title
+    # 7 client-required "Raw" columns (confirmed IDs)
+    "raw_patient_control_num":    ("text_mm1gkf40",    "text"),    # Raw Patient Control Number
+    "raw_payer_claim_control":    ("text_mm1gefbz",    "text"),    # Raw Payer Claim Control Number
+    "raw_total_claim_charge":     ("numeric_mm1ghydj", "number"),  # Raw Claim Charge Amount
+    "raw_remittance_trace":       ("text_mm1gz8ss",    "text"),    # Raw Remittance Trace Number
+    "raw_patient_responsibility": ("numeric_mm1gdpjq", "number"),  # Raw Patient Responsibility Amount
+    "raw_era_date":               ("text_mm2047g9",    "text"),    # Raw ERA Date
+    "raw_era_claim_status":       ("text_mm20k1zv",    "text"),    # Raw ERA Claim Status
+    # Existing working columns (confirmed IDs)
+    "primary_paid":               ("numeric_mm115q76", "number"),  # Primary Paid (A)
+    "pr_amount":                  ("numeric_mkxmc2rh", "number"),  # PR Amount (C)
+    "paid_date":                  ("date_mm11zg2f",    "date"),    # Primary Paid Date (D)
+    "check_number":               ("text_mm11m3fh",    "text"),    # Check #
+    "primary_status":             ("text_mkzck8tw",    "text"),    # Primary -->
+}
+
+# ── ERA Subitem column map — confirmed from GET /test/subitem-titles ──────────
+# Column IDs verified against subitem column export (document index 2).
+# Keys must match field names produced by era_parser_service.py children dicts.
+SUBITEM_ERA_COLUMN_MAP = {
+    # field key in child dict          column_id               type      # Board title
+    # ── Identifiers ────────────────────────────────────────────────────────────
+    "Raw Line Item Control Number": ("text_mm1ge9yn",       "text"),    # Raw Line Item Control Number
+    "Patient Control #":            ("text_mm16qhea",       "text"),    # Patient Control #
+    "Claim Status Code":            ("text_mm1gat8c",       "text"),    # Claim Status Code
+    # ── Dates ──────────────────────────────────────────────────────────────────
+    "Raw Service Date":             ("date_mm11hscn",       "date"),    # Raw Service Date
+    # ── Amounts ────────────────────────────────────────────────────────────────
+    "Primary Paid":                 ("numeric_mm1czbyg",    "number"),  # Primary Paid (line item paid)
+    "Raw Line Item Charge Amount":  ("numeric_mm11v6th",    "number"),  # Raw Line Item Charge Amount
+    "Raw Allowed Actual":           ("numeric_mm1gg3pj",    "number"),  # Raw Allowed Amount
+    # ── PR Adjustment Breakdown ────────────────────────────────────────────────
+    "Parsed PR Amount":             ("numeric_mm1gtdts",    "number"),  # Raw PR Amount (total patient resp)
+    "Parsed Deductible Amount":     ("numeric_mm1gredn",    "number"),  # Raw Deductible Amount (PR-1)
+    "Parsed Coinsurance Amount":    ("numeric_mm1g3nvh",    "number"),  # Raw Coinsurance Amount (PR-2)
+    "Parsed Copay Amount":          ("numeric_mm11aqr1",    "number"),  # Raw Copay Amount (PR-3)
+    "Parsed Other PR Amount":       ("numeric_mm1gtd3e",    "number"),  # Raw Other PR Amount
+    # ── CO Adjustment Breakdown ────────────────────────────────────────────────
+    "Parsed CO Amount":             ("numeric_mm1g48c",     "number"),  # Raw CO Amount (total contractual)
+    "Parsed CO-45 Amount":          ("numeric_mm1gken",     "number"),  # Raw CO-45 Amount
+    "Parsed CO-253 Amount":         ("numeric_mm1gt3ky",    "number"),  # Raw CO-253 Amount
+    "Parsed Other CO Amount":       ("numeric_mm1g3vgp",    "number"),  # Raw Other CO Amount
+    # ── OA / PI Adjustments ───────────────────────────────────────────────────
+    "Parsed OA Amount":             ("numeric_mm1grbc3",    "number"),  # Raw OA Amount
+    "Parsed PI Amount":             ("numeric_mm1gh22d",    "number"),  # Raw PI Amount
+    # ── Code Strings ──────────────────────────────────────────────────────────
+    "Parsed Adjustment Codes":      ("text_mm1gt1dh",       "text"),    # Raw Adjustment Codes (e.g. CO-45; PR-1)
+    "Parsed CARC Codes":            ("text_mm20ke2s",       "text"),    # Raw CARC Codes
+    "Parsed RARC Codes":            ("text_mm20brp",        "text"),    # Raw RARC Codes
+    "Parsed Remark Codes":          ("text_mm1g6tw3",       "text"),    # Raw Remark Codes
+    "Parsed Remark Text":           ("long_text_mm1ggyz6",  "long_text"), # Raw Remark Text
+    "Parsed Adjustment Reasons":    ("long_text_mm1g7xmy",  "long_text"), # Raw Adjustment Reasons
+}
+
+
 def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> None:
     """
-    Populate ERA payment data onto a Claims Board item.
-    Phase 1: Parent row fields only.
+    Write ALL ERA parent fields + service line subitems to a Claims Board item.
+    Covers every Raw/Parsed column the client defined.
     """
     claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
 
@@ -321,18 +380,9 @@ def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> Non
     }
     """
 
-    # Phase 1 parent fields — from claimsvisualizer.py
-    field_to_column = {
-        "primary_paid":            ("numeric_mm115q76", "number"),  # Primary Paid (A)
-        "pr_amount":               ("numeric_mkxmc2rh", "number"),  # PR Amount (C)
-        "paid_date":               ("date_mm11zg2f",    "date"),    # Primary Paid Date (D)
-        "check_number":            ("text_mm11m3fh",    "text"),    # Check #
-        "primary_status":          ("text_mkzck8tw",    "text"),    # Primary -->
-        "raw_patient_control_num": ("text_mm0fa4vk",    "text"),    # Raw PCN
-    }
-
-    for field, (column_id, col_type) in field_to_column.items():
-        value = era_data.get(field, "")
+    # Write all parent fields
+    for field, (column_id, col_type) in ERA_PARENT_COLUMN_MAP.items():
+        value = era_data.get(field)
         if value is None or value == "":
             continue
         try:
@@ -341,7 +391,7 @@ def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> Non
             elif col_type == "date":
                 formatted = '{"date": "' + str(value) + '"}'
             else:
-                formatted = f'"{value}"'
+                formatted = f'"{str(value)}"'
 
             run_query(mutation, {
                 "itemId":   str(claims_item_id),
@@ -349,43 +399,14 @@ def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> Non
                 "columnId": column_id,
                 "value":    formatted,
             })
-            logger.info(f"ERA parent: set {field} → {column_id} = {value}")
+            logger.info(f"ERA parent: {field} → {column_id} = {value}")
         except Exception as e:
-            logger.warning(f"ERA parent: failed {field}: {e}")
+            logger.warning(f"ERA parent: failed {field} ({column_id}): {e}")
 
-    # Populate service line subitems
+    # Write service line subitems
     children = era_data.get("children", [])
     if children:
         populate_era_service_line_subitems(claims_item_id, children)
-
-
-# Subitem column ID mapping
-# Based on Claims Board subitem columns fetched
-SUBITEM_ERA_COLUMN_MAP = {
-    # ERA field name         → (column_id,              type)
-    "Primary Paid":          ("numeric_mm11v6th",       "number"),  # Primary Paid
-    "Raw Service Date":      ("date_mm11hscn",          "date"),    # Service Date
-    "Raw Line Item Charge":  ("numeric_mm1gg3pj",       "number"),  # Charge Amount
-    "Patient Control #":     ("text_mm16qhea",          "text"),    # Patient Control #
-    "Claim Status Code":     ("text_mm1gzsan",          "text"),    # Claim Status Code
-    "Raw Line Control #":    ("text_mm1g4yd9",          "text"),    # Line Item Control #
-    "Raw Allowed Actual":    ("numeric_mm1gtdts",       "number"),  # Allowed Actual
-    "Parsed PR Amount":      ("numeric_mm1gredn",       "number"),  # Parsed PR Amount
-    "Parsed Deductible":     ("numeric_mm1g3nvh",       "number"),  # Parsed Deductible
-    "Parsed Coinsurance":    ("numeric_mm11aqr1",       "number"),  # Parsed Coinsurance
-    "Parsed Copay":          ("numeric_mm1gtd3e",       "number"),  # Parsed Copay
-    "Parsed Other PR":       ("numeric_mm1g48c",       "number"),  # Parsed Other PR
-    "Parsed CO Amount":      ("numeric_mm1gken",        "number"),  # Parsed CO Amount
-    "Parsed CO-45":          ("numeric_mm1gt3ky",        "number"),  # Parsed CO-45
-    "Parsed CO-253":         ("numeric_mm1g3vgp",       "number"),  # Parsed CO-253
-    "Parsed Other CO":       ("numeric_mm1grbc3",       "number"),  # Parsed Other CO
-    "Parsed OA Amount":      ("numeric_mm1gh22d",       "number"),  # Parsed OA
-    "Parsed PI Amount":      ("numeric_mm1gqkvz",       "number"),  # Parsed PI
-    "Parsed Remark Codes":   ("text_mm1g6tw3",          "text"),    # Remark Codes
-    "Parsed Remark Text":    ("long_text_mm1ggyz6",     "long_text"), # Remark Text
-    "Parsed Adj Codes":      ("text_mm1gt1dh",          "text"),    # Adjustment Codes
-    "Parsed Adj Reasons":    ("long_text_mm1g7xmy",     "long_text"), # Adjustment Reasons
-}
 
 #
 # def store_claim_pcn(item_id: str, pcn: str, claim_id: str) -> None:
@@ -573,7 +594,7 @@ def _get_existing_subitems(claims_item_id: str) -> dict:
     """
     Fetch all existing subitems for a Claims Board item.
     Returns dict keyed by HCPC code → {subitem_id, subitem_board_id}
-    HCPC code is read from column color_mm1cdvq8 (the HCPCS dropdown on the subitem).
+    HCPC code is read from color_mm1cdvq8 (the HCPCS status column on the subitem).
     """
     query = """
     query GetSubitems($itemId: ID!) {
@@ -598,18 +619,17 @@ def _get_existing_subitems(claims_item_id: str) -> dict:
         for sub in subitems:
             subitem_id       = sub.get("id", "")
             subitem_board_id = sub.get("board", {}).get("id", "")
-            # HCPC code is stored in color_mm1cdvq8
             hcpc = ""
             for col in sub.get("column_values", []):
                 if col.get("id") == "color_mm1cdvq8":
-                    hcpc = col.get("text", "")
+                    hcpc = (col.get("text") or "").strip()
                     break
             if hcpc and subitem_id:
                 existing[hcpc] = {
                     "subitem_id":       subitem_id,
                     "subitem_board_id": subitem_board_id,
                 }
-                logger.info(f"  Found existing subitem: HCPC={hcpc} → id={subitem_id}")
+                logger.info(f"  Existing subitem: HCPC={hcpc} → id={subitem_id}")
         return existing
     except Exception as e:
         logger.warning(f"Failed to fetch existing subitems: {e}")
@@ -618,15 +638,10 @@ def _get_existing_subitems(claims_item_id: str) -> dict:
 
 def populate_era_service_line_subitems(claims_item_id: str, children: list) -> None:
     """
-    Populate ERA data into subitems on a Claims Board item.
-
-    Match logic:
-    - Look up existing subitems by HCPC code (color_mm1cdvq8)
-    - If a match is found → UPDATE that subitem in place (no new subitem created)
-    - If no match found → CREATE a new subitem named after the HCPC code
+    Match ERA service lines to existing subitems by HCPC code, then write ERA fields.
+    - Match found → UPDATE existing subitem in place (no new subitem created)
+    - No match    → CREATE new subitem named after the HCPC code
     """
-    claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
-
     update_mutation = """
     mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
       change_column_value(
@@ -637,7 +652,6 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
       ) { id }
     }
     """
-
     create_mutation = """
     mutation CreateSubitem($parentId: ID!, $itemName: String!) {
       create_subitem(parent_item_id: $parentId, item_name: $itemName) {
@@ -647,76 +661,38 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
     }
     """
 
-    # Fetch all existing subitems once — keyed by HCPC code
+    # Fetch all existing subitems once, keyed by HCPC code
     existing_subitems = _get_existing_subitems(claims_item_id)
 
     for child in children:
-        hcpc_code = child.get("HCPC Code", "")
+        hcpc_code = (child.get("HCPC Code") or "").strip()
+        item_name = hcpc_code or "ERA Line"
 
         try:
-            # ── Match to existing subitem by HCPC code ────────────────────────
-            if hcpc_code and hcpc_code in existing_subitems:
-                subitem_id       = existing_subitems[hcpc_code]["subitem_id"]
-                subitem_board_id = existing_subitems[hcpc_code]["subitem_board_id"]
-                logger.info(f"Matched existing subitem for HCPC={hcpc_code} → id={subitem_id}")
-
+            # Match by name — same key used when the subitem was first created
+            if item_name in existing_subitems:
+                subitem_id = existing_subitems[item_name]["subitem_id"]
+                subitem_board_id = existing_subitems[item_name]["subitem_board_id"]
+                logger.info(f"Matched existing subitem name={item_name!r} → id={subitem_id} (updating in place)")
             else:
-                # No match — create a new subitem
-                item_name = hcpc_code or "Unknown"
+                # No match — create new subitem
                 result = run_query(create_mutation, {
                     "parentId": str(claims_item_id),
                     "itemName": item_name,
                 })
-                subitem_id = (
-                    result.get("data", {})
-                    .get("create_subitem", {})
-                    .get("id", "")
-                )
-                subitem_board_id = (
-                    result.get("data", {})
-                    .get("create_subitem", {})
-                    .get("board", {})
-                    .get("id", "")
-                )
-                if not subitem_id or not subitem_board_id:
-                    logger.warning(f"Failed to create subitem for HCPC={hcpc_code}")
+                sub_data = result.get("data", {}).get("create_subitem", {})
+                subitem_id = sub_data.get("id", "")
+                subitem_board_id = sub_data.get("board", {}).get("id", "")
+                if not subitem_id:
+                    logger.warning(f"Failed to create subitem name={item_name!r}")
                     continue
-                logger.info(f"Created new subitem for HCPC={hcpc_code} → id={subitem_id}")
+                logger.info(f"Created new subitem name={item_name!r} → id={subitem_id}")
 
-            # ── Write ERA fields into the subitem ─────────────────────────────
-            fields = {
-                "Primary Paid":         child.get("Primary Paid"),
-                "Raw Service Date":     child.get("Raw Service Date"),
-                "Raw Line Item Charge": child.get("Raw Line Item Charge Amount"),
-                "Patient Control #":    child.get("Patient Control #"),
-                "Claim Status Code":    child.get("Claim Status Code"),
-                "Raw Line Control #":   child.get("Raw Line Item Control Number"),
-                "Raw Allowed Actual":   child.get("Raw Allowed Actual"),
-                "Parsed PR Amount":     child.get("Parsed PR Amount"),
-                "Parsed Deductible":    child.get("Parsed Deductible Amount"),
-                "Parsed Coinsurance":   child.get("Parsed Coinsurance Amount"),
-                "Parsed Copay":         child.get("Parsed Copay Amount"),
-                "Parsed Other PR":      child.get("Parsed Other PR Amount"),
-                "Parsed CO Amount":     child.get("Parsed CO Amount"),
-                "Parsed CO-45":         child.get("Parsed CO-45 Amount"),
-                "Parsed CO-253":        child.get("Parsed CO-253 Amount"),
-                "Parsed Other CO":      child.get("Parsed Other CO Amount"),
-                "Parsed OA Amount":     child.get("Parsed OA Amount"),
-                "Parsed PI Amount":     child.get("Parsed PI Amount"),
-                "Parsed Remark Codes":  child.get("Parsed Remark Codes"),
-                "Parsed Remark Text":   child.get("Parsed Remark Text"),
-                "Parsed Adj Codes":     child.get("Parsed Adjustment Codes"),
-                "Parsed Adj Reasons":   child.get("Parsed Adjustment Reasons"),
-            }
-
-            for field_name, value in fields.items():
+            # Write all ERA fields into the subitem using SUBITEM_ERA_COLUMN_MAP
+            for field_name, (col_id, col_type) in SUBITEM_ERA_COLUMN_MAP.items():
+                value = child.get(field_name)
                 if value is None or value == "" or value == 0.0:
                     continue
-
-                col_id, col_type = SUBITEM_ERA_COLUMN_MAP.get(field_name, (None, None))
-                if not col_id:
-                    continue
-
                 try:
                     if col_type == "number":
                         formatted = str(value)
@@ -728,18 +704,17 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
                         formatted = f'"{str(value)}"'
 
                     run_query(update_mutation, {
-                        "itemId":   str(subitem_id),
-                        "boardId":  str(subitem_board_id),
+                        "itemId": str(subitem_id),
+                        "boardId": str(subitem_board_id),
                         "columnId": col_id,
-                        "value":    formatted,
+                        "value": formatted,
                     })
-                    logger.info(f"  Subitem HCPC={hcpc_code}: set {field_name} = {value}")
-
+                    logger.info(f"  Subitem name={item_name!r}: {field_name} = {value}")
                 except Exception as e:
-                    logger.warning(f"  Subitem HCPC={hcpc_code}: failed {field_name}: {e}")
+                    logger.warning(f"  Subitem name={item_name!r}: failed {field_name}: {e}")
 
         except Exception as e:
-            logger.warning(f"Failed to process subitem for HCPC={hcpc_code}: {e}")
+            logger.warning(f"Failed to process subitem name={item_name!r}: {e}")
 
 def get_column_settings(board_id: str, column_id: str) -> dict:
     """Debug: Get column settings to find valid status labels"""

@@ -52,8 +52,9 @@ CLAIMS_PARENT_COL = {
 CLAIMS_SUBITEM_COL = {
     "hcpc_code":      "color_mm1cdvq8",
     "modifiers":      "dropdown_mm1z7je9",
-    "claim_quantity": "numeric_mm20r76b",
-    "charge_amount":  "numeric_mm1za8v5",
+    "claim_quantity": "numeric_mm20r76b",   # plain Numbers column — written by Python at claim creation
+    "charge_amount":  "numeric_mm1za8v5",   # plain Numbers column — used as lineItemChargeAmount in Stedi payload
+    "est_pay":        "numeric_mm1zspsy",   # plain Numbers column — same value as charge_amount (contracted rate)
 }
 
 
@@ -139,6 +140,7 @@ def extract_subitem_fields(subitem: dict) -> dict:
         "modifiers":      t(CLAIMS_SUBITEM_COL["modifiers"]),
         "claim_quantity": t(CLAIMS_SUBITEM_COL["claim_quantity"]),
         "charge_amount":  t(CLAIMS_SUBITEM_COL["charge_amount"]),
+        "est_pay":        t(CLAIMS_SUBITEM_COL["est_pay"]),
     }
 
 
@@ -240,7 +242,12 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
             svc_line["professionalService"]["procedureModifiers"] = modifiers[:4]
 
         service_lines.append(svc_line)
-        logger.info(f"[SUBMIT] Service line: {hcpc_code} qty={claim_qty} charge={charge:.2f} mods={modifiers}")
+        est_pay_raw = sub.get("est_pay", "") or ""
+        try:
+            est_pay_log = f"${float(est_pay_raw):.2f}" if est_pay_raw else "not set"
+        except ValueError:
+            est_pay_log = "not set"
+        logger.info(f"[SUBMIT] Service line: {hcpc_code} qty={claim_qty} charge={charge:.2f} est_pay={est_pay_log} mods={modifiers}")
 
     if not service_lines:
         raise ValueError("No valid HCPC-coded service lines found on Claims Board subitems")

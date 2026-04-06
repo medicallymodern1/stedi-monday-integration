@@ -248,12 +248,18 @@ async def test_era_to_monday(claims_item_id: str, request: Request):
             "parent_fields_written": {
                 "raw_patient_control_num":    summary.get("raw_patient_control_num"),
                 "raw_payer_claim_control":    summary.get("raw_payer_claim_control"),
+                "raw_total_claim_charge":     summary.get("raw_total_claim_charge"),
+                "raw_remittance_trace":       summary.get("raw_remittance_trace"),
+                "raw_patient_responsibility": summary.get("raw_patient_responsibility"),
+                "raw_era_date":               summary.get("raw_era_date"),
+                "raw_era_claim_status":       summary.get("raw_era_claim_status"),
                 "primary_paid":               summary.get("primary_paid"),
                 "pr_amount":                  summary.get("pr_amount"),
                 "primary_status":             summary.get("primary_status"),
                 "paid_date":                  summary.get("paid_date"),
                 "check_number":               summary.get("check_number"),
             },
+            "service_lines_count": len(summary.get("children", [])),
             "service_lines": summary.get("children", []),
         })
 
@@ -501,6 +507,88 @@ async def submit_test_claim():
         "claim_id":       result.get("claim_id"),
         "transaction_id": result.get("transaction_id"),
         "note":           "Check Railway logs in 2-3 minutes for 277CA and 835 webhook"
+    }
+
+
+@app.post("/test/era-full-flow", tags=["Testing"])
+async def test_era_full_flow(request: Request):
+    """
+    FULL ERA TEST — paste any Stedi 835 JSON as the request body.
+
+    What this does:
+      1. Parses the ERA JSON (both Stedi API format and flat format supported)
+      2. For each ERA row, looks up the Claims Board item by PCN
+      3. Writes ALL Raw + Parsed fields to parent columns + service line subitems
+      4. Returns a complete breakdown of every field parsed and written
+
+    How to use:
+      - Submit a test claim → note the PCN from the Stedi response
+      - Paste the Stedi sample 835 JSON but change
+        claimPaymentInfo.patientControlNumber to your PCN
+      - POST to /test/era-full-flow with that JSON as the body
+      - Check Claims Board — all Raw/Parsed columns should populate
+
+    Alternatively use /test/835/{transaction_id} to pull live from Stedi.
+    """
+    from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
+    from routes.stedi_webhook import _find_claims_item_by_pcn
+    from services.monday_service import populate_era_data_on_claims_item
+
+    body        = await request.body()
+    era_content = body.decode()
+
+    era_rows = parse_era_from_string(era_content)
+    if not era_rows:
+        return {
+            "status": "error",
+            "error":  "No ERA rows parsed — check JSON format",
+            "hint":   "Must be valid Stedi 835 JSON with 'transactions' key (API format) "
+                      "or 'claimPaymentInfo' key (flat format)",
+        }
+
+    results = []
+    for i, era_row in enumerate(era_rows):
+        parent  = era_row.get("parent", {})
+        pcn     = parent.get("raw_patient_control_num", "")
+        summary = summarize_era_row_for_monday(era_row)
+
+        claims_item_id = _find_claims_item_by_pcn(pcn)
+
+        row_result = {
+            "row":                   i,
+            "pcn":                   pcn,
+            "claims_item_id":        claims_item_id or "NOT FOUND",
+            "written":               False,
+            "error":                 None,
+            # Complete parent field breakdown
+            "parent_fields_parsed": {k: v for k, v in summary.items() if k != "children"},
+            "service_lines_count":  len(summary.get("children", [])),
+            "service_line_detail":  summary.get("children", []),
+        }
+
+        if claims_item_id:
+            try:
+                populate_era_data_on_claims_item(claims_item_id, summary)
+                row_result["written"] = True
+                logger.info(f"[ERA FULL FLOW] Written to Claims Board item {claims_item_id}")
+            except Exception as e:
+                row_result["error"] = str(e)
+                logger.error(f"[ERA FULL FLOW] Write failed for {claims_item_id}: {e}", exc_info=True)
+        else:
+            row_result["error"] = (
+                f"No Claims Board item found for PCN='{pcn}'. "
+                f"Submit a claim first, then use that PCN in your test 835 JSON."
+            )
+
+        results.append(row_result)
+
+    written = sum(1 for r in results if r["written"])
+    return {
+        "status":       "done",
+        "rows_parsed":  len(results),
+        "rows_written": written,
+        "rows_failed":  len(results) - written,
+        "results":      results,
     }
 
 

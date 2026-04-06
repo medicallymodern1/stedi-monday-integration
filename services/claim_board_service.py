@@ -304,6 +304,7 @@ def safe_int(val) -> int:
     except (ValueError, TypeError):
         return 0
 
+
 def safe_claim_qty(cqty_str, fallback: int) -> int:
     """
     Convert a resolved claim quantity string to int.
@@ -322,6 +323,7 @@ def safe_claim_qty(cqty_str, fallback: int) -> int:
         return int(float(val))
     except (ValueError, TypeError):
         return fallback
+
 
 def normalize_date_iso(value: str) -> str:
     """
@@ -596,7 +598,7 @@ def build_service_lines(cols: dict) -> list:
             "line_order_quantity": pump_qty,
             "line_claim_quantity": pump_qty,   # pump claim qty is always order qty (=1)
             "line_charge_amount":  charge,
-            "line_est_pay":        "",
+            "line_est_pay":        charge,
             "service_date":        dos,
         })
         logger.info(f"[CLAIMS] Insulin Pump  hcpc={hcpc} order={pump_qty} claim={cqty} charge={charge} mods={mods}")
@@ -617,7 +619,7 @@ def build_service_lines(cols: dict) -> list:
             "line_order_quantity": total_infusion,
             "line_claim_quantity": safe_claim_qty(cqty, total_infusion),
             "line_charge_amount":  charge,
-            "line_est_pay":        "",
+            "line_est_pay":        charge,
             "service_date":        dos,
         })
         logger.info(f"[CLAIMS] Infusion Set  hcpc={hcpc} order={total_infusion}(inf1={infusion_1_qty}+inf2={infusion_2_qty}) claim={cqty} charge={charge} mods={mods}")
@@ -637,7 +639,7 @@ def build_service_lines(cols: dict) -> list:
             "line_order_quantity": cartridge_qty,
             "line_claim_quantity": safe_claim_qty(cqty, cartridge_qty),
             "line_charge_amount":  charge,
-            "line_est_pay":        "",
+            "line_est_pay":        charge,
             "service_date":        dos,
         })
         logger.info(f"[CLAIMS] Cartridge  hcpc={hcpc} order={cartridge_qty} claim={cqty} charge={charge} mods={mods}")
@@ -657,10 +659,9 @@ def build_service_lines(cols: dict) -> list:
             "line_order_quantity": cgm_sensor_qty,
             "line_claim_quantity": safe_claim_qty(cqty, cgm_sensor_qty),
             "line_charge_amount":  charge,
-            "line_est_pay":        "",
+            "line_est_pay":        charge,
             "service_date":        dos,
         })
-        # print(f"line_claim_quantity: {safe_claim_qty(cqty, cgm_sensor_qty)}")
         logger.info(f"[CLAIMS] CGM Sensors  hcpc={hcpc} cgm_type={cgm_type} order={cgm_sensor_qty} claim={cqty} charge={charge} mods={mods}")
 
     # ── CGM Monitor ───────────────────────────────────────────────────────────
@@ -677,7 +678,7 @@ def build_service_lines(cols: dict) -> list:
             "line_order_quantity": cgm_monitor_qty,
             "line_claim_quantity": cgm_monitor_qty,  # monitor claim qty = 1 always
             "line_charge_amount":  charge,
-            "line_est_pay":        "",
+            "line_est_pay":        charge,
             "service_date":        dos,
         })
         logger.info(f"[CLAIMS] CGM Monitor  hcpc={hcpc} order={cgm_monitor_qty} charge={charge} mods={mods}")
@@ -708,7 +709,7 @@ _ANTHEM_JLJ_MEDICAID_PLANS = {
 _MEDICAID_ID_RE = re.compile(r"^[A-Za-z]{2}\d{5}[A-Za-z]$")
 
 # Stedi payer ID for NY Medicaid (MCDNY)
-_MEDICAID_PAYER_ID = "MCDNY"
+_MEDICAID_PAYER_ID   = "MCDNY"
 _MEDICAID_PAYER_NAME = "Medicaid"
 
 
@@ -767,30 +768,34 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
     Route service lines into one or two claim groups based on payer split rules.
 
     Rule 1 — Fidelis Medicaid:
-      Claim A: pump lines only  (primary payer)
-      Claim B: infusion + cartridge lines → Medicaid / MCDNY (if any exist)
+      Claim A: pump + CGM lines  (primary payer)
+      Claim B: infusion + cartridge lines -> Medicaid / MCDNY (if any exist)
+      CGM lines fall through to Claim A (should never exist in practice for this payer).
 
     Rule 2 — Anthem BCBS Medicaid (JLJ):
       Split triggered if plan_name in approved list OR secondary_id matches Medicaid ID regex.
       Claim A: pump + CGM lines  (primary payer)
-      Claim B: infusion + cartridge lines → Medicaid / MCDNY (if any exist)
-      No split → all lines on Anthem JLJ as single claim.
+      Claim B: infusion + cartridge lines -> Medicaid / MCDNY (if any exist)
+      No split -> all lines on Anthem JLJ as single claim.
 
     Default: single claim group on primary insurance.
     """
-    payer_name = cols.get("primary_insurance", "")
-    payer_id   = resolve_payer_id(payer_name)
-    dos        = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
+    payer_name   = cols.get("primary_insurance", "")
+    payer_id     = resolve_payer_id(payer_name)
+    dos          = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
     secondary_id = cols.get("secondary_id", "")
-    plan_name    = cols.get("plan_name", "")   # populated from subitem; see Open Question in handoff
+    plan_name    = cols.get("plan_name", "")  # from subitem; confirm column ID with Brandon
 
     if not lines:
         return []
 
     # ── Rule 1: Fidelis Medicaid ──────────────────────────────────────────────
     if payer_name == "Fidelis Medicaid":
-        primary_lines = [ln for ln in lines if ln.get("resolved_hcpc_code") in _PUMP_HCPCS]
+        primary_lines  = [ln for ln in lines if ln.get("resolved_hcpc_code") in (_PUMP_HCPCS | _CGM_HCPCS)]
         medicaid_lines = [ln for ln in lines if ln.get("resolved_hcpc_code") in _SUPPLY_HCPCS]
+        # CGM lines fall through to Claim A per client instruction.
+        # In practice a Fidelis Medicaid order should never have CGM quantities,
+        # but if they exist they stay on the primary claim rather than being dropped.
 
         groups = []
         if primary_lines:
@@ -813,7 +818,7 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
 
     # ── Rule 2: Anthem BCBS Medicaid (JLJ) ───────────────────────────────────
     if payer_name == "Anthem BCBS Medicaid (JLJ)":
-        plan_match = plan_name.strip().upper() in {p.upper() for p in _ANTHEM_JLJ_MEDICAID_PLANS}
+        plan_match       = plan_name.strip().upper() in {p.upper() for p in _ANTHEM_JLJ_MEDICAID_PLANS}
         medicaid_id_match = bool(_MEDICAID_ID_RE.match(secondary_id.strip())) if secondary_id else False
 
         if plan_match or medicaid_id_match:

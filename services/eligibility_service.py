@@ -1,176 +1,176 @@
+"""
+services/eligibility_service.py
+================================
+Stage A + B + C for Stedi real-time eligibility checks (V1 PRD).
+
+Architecture (per PRD Section 13):
+  A. Input layer     — extract Monday item fields into a normalized row dict
+  B. Business logic  — validate, build payload, call Stedi (via stedi_eligibility.py)
+  C. Output layer    — parse response, build Monday writeback (via stedi_eligibility_parser.py
+                       and stedi_eligibility_monday_mapping.py)
+
+The client-provided files are the source of truth for business logic:
+  stedi_eligibility.py          — payload builder + HTTP sender
+  stedi_eligibility_parser.py   — response parser
+  stedi_eligibility_monday_mapping.py — column name mappings
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import Dict, Any
-import os
-import requests
+import re
+from typing import Any
+
+from stedi_eligibility import (
+    build_eligibility_payload_from_monday_row,
+    send_realtime_eligibility_check,
+)
+from stedi_eligibility_parser import parse_stedi_eligibility_response
+from stedi_eligibility_monday_mapping import build_monday_writeback_payload
+from stedi_eligibility_parser import DEFAULT_REQUESTED_SERVICE_TYPE_CODE
 
 logger = logging.getLogger(__name__)
 
-
-def check_eligibility(monday_item: dict) -> dict:
-    try:
-        row = extract_eligibility_inputs(monday_item)
-
-        validate_inputs(row)
-
-        payload = build_stedi_payload(row)
-
-        response = call_stedi_api(payload)
-
-        parsed = parse_response(response)
-        print("check_eligibility:", parsed)
-
-        return parsed
-
-    except Exception as e:
-        logger.error(f"Eligibility check failed: {e}", exc_info=True)
-        return {
-            "eligibility_error_description": str(e)
-        }
-
-def extract_eligibility_inputs(monday_item: dict) -> dict:
-    cols = {c.get("id"): c.get("text", "") for c in monday_item.get("column_values", [])}
-
-    first, last = split_name(monday_item.get("name", ""))
-
-    return {
-        "payer": cols.get("color_mm18jhq5", ""),
-        "member_id": cols.get("text_mm18s3fe", ""),
-        "first_name": first,
-        "last_name": last,
-        "dob": cols.get("text_mm187t6a", ""),
-    }
-
-def validate_inputs(row: dict):
-    if not row.get("member_id"):
-        raise ValueError("Missing Member ID")
-
-    if not row.get("payer"):
-        raise ValueError("Missing Insurance")
-
-    if not row.get("dob"):
-        raise ValueError("Missing DOB")
-
-    if not row.get("first_name"):
-        raise ValueError("Invalid First Name")
-
-    if not row.get("last_name"):
-        raise ValueError("Invalid Last Name")
-
-import re
+# ── Onboarding Board column IDs ───────────────────────────────────────────────
+# These are the column IDs on the New Onboarding Board.
+# Update once Brandon exports the live board column IDs.
+ONBOARDING_COL = {
+    "primary_insurance": "color_mm18jhq5",   # Primary Insurance Final (status)
+    "member_id":         "text_mm18s3fe",    # Member ID (text)
+    "dob":               "text_mm187t6a",    # Patient Date of Birth (text)
+}
+# First name and last name come from the item name, not a column.
 
 
-def clean_name(name: str) -> str:
+# =============================================================================
+# A. INPUT LAYER
+# =============================================================================
+
+def _clean_name(name: str) -> str:
+    """Remove test brackets, copy markers, and extra whitespace from item name."""
     if not name:
         return ""
-
-    # Remove brackets content (test, copy, etc.)
-    name = re.sub(r"\(.*?\)", "", name)
-
-    # Remove leading non-alphanumeric characters
-    name = re.sub(r"^[^a-zA-Z0-9]+", "", name)
-
-    # Remove extra spaces
-    name = " ".join(name.split())
-
+    name = re.sub(r"\(.*?\)", "", name)       # remove (copy), (test), etc.
+    name = re.sub(r"^\[.*?\]\s*", "", name)   # remove [Test]N prefix
+    name = re.sub(r"\s+", " ", name)          # collapse whitespace
     return name.strip()
 
 
-def split_name(full_name: str) -> tuple[str, str]:
-    clean = clean_name(full_name)
-
+def _split_name(full_name: str) -> tuple[str, str]:
+    """Split 'First Last' into (first, last). Returns ('', '') if blank."""
+    clean = _clean_name(full_name)
     parts = clean.split()
-
     if not parts:
         return "", ""
-
     if len(parts) == 1:
         return parts[0], ""
-
     return parts[0], " ".join(parts[1:])
 
-def format_dob(dob: str) -> str:
-    if "-" in dob:
-        parts = dob.split("-")
-        return "".join(parts)
-    if "/" in dob:
-        parts = dob.split("/")
-        return f"{parts[2]}{parts[0].zfill(2)}{parts[1].zfill(2)}"
-    return dob
 
-def build_stedi_payload(row: dict) -> dict:
-    from services.stedi_service import lookup_payer_name_by_internal
-    from claim_assumptions import resolve_payer_id
+def extract_eligibility_inputs(monday_item: dict) -> dict[str, Any]:
+    """
+    Extract Onboarding Board column values into a normalized row dict
+    shaped exactly as stedi_eligibility.py expects.
 
-    payer_name = row["payer"]
+    PRD Section 4: required inputs are payer label, member ID,
+    first name, last name, DOB.
+    """
+    cols = {
+        c.get("id"): (c.get("text") or "").strip()
+        for c in monday_item.get("column_values", [])
+    }
 
-    # Convert internal payer → payer_id (IMPORTANT)
-    payer_id = resolve_payer_id(payer_name)
-
-    if not payer_id:
-        raise ValueError(f"Unable to resolve payer_id for: {payer_name}")
+    first_name, last_name = _split_name(monday_item.get("name", ""))
 
     return {
-        "tradingPartnerServiceId": payer_id,
-        "provider": {
-            "npi": "1023042348",
-            "organizationName": "Your Org Name"
-        },
-        "subscriber": {
-            "memberId": row["member_id"],
-            "firstName": row["first_name"],
-            "lastName": 'test last',
-            "dateOfBirth": format_dob(row["dob"]),
-        },
-        "encounter": {
-            "serviceTypeCodes": ["30"]  # 30 = General Medical (safe default)
-        },
-        "externalPatientId": row["member_id"]
+        # Keys match MONDAY_ELIGIBILITY_INPUT_COLUMN_MAP values
+        "Primary Insurance Final": cols.get(ONBOARDING_COL["primary_insurance"], ""),
+        "Member ID":               cols.get(ONBOARDING_COL["member_id"], ""),
+        "First Name":              first_name,
+        "Last Name":               last_name,
+        "Patient Date of Birth":   cols.get(ONBOARDING_COL["dob"], ""),
+        # Optional identifiers for logging / controlNumber
+        "Pulse ID":  str(monday_item.get("id", "")),
+        "Name":      monday_item.get("name", ""),
     }
 
 
-def call_stedi_api(payload: dict) -> dict:
-    import os
-    import requests
+# =============================================================================
+# B. BUSINESS LOGIC LAYER
+# =============================================================================
 
-    api_key = os.getenv("STEDI_API_KEY")
+def run_eligibility_check(monday_item: dict) -> dict[str, Any]:
+    """
+    Main entry point: Monday item → eligibility writeback payload.
 
-    if not api_key:
-        raise ValueError("Missing STEDI_API_KEY")
+    Returns a normalized writeback dict (column name → value) in all cases:
+    - success
+    - validation failure (missing fields, unknown payer)
+    - HTTP / Stedi error
 
-    url = "https://healthcare.us.stedi.com/2024-04-01/change/medicalnetwork/eligibility/v3"
+    PRD Section 15: errors must always be available for Monday writeback.
+    """
+    item_id   = str(monday_item.get("id", ""))
+    item_name = monday_item.get("name", "")
 
-    response = requests.post(
-        url,
-        json=payload,
-        headers={
-            "Authorization": api_key,
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-    print("Stedi API response:", response.status_code, response.text)
-    print("Payload sent:", payload)
-    if not response.ok:
-        raise ValueError(f"Stedi API error: {response.text}")
+    logger.info(f"[ELG] Starting eligibility check | item={item_id} name={item_name!r}")
 
-    return response.json()
-
-
-def parse_response(response: dict) -> dict:
     try:
-        benefits = response.get("benefitsInformation", [])
+        row = extract_eligibility_inputs(monday_item)
 
-        active = "No"
-        if benefits:
-            active = "Yes"
+        logger.info(
+            f"[ELG] Inputs | item={item_id} "
+            f"payer={row.get('Primary Insurance Final')!r} "
+            f"member_id={row.get('Member ID')!r}"
+        )
 
-        return {
-            "eligibility_active": active,
-            "eligibility_plan_name": response.get("plan", {}).get("name", ""),
-            "eligibility_error_description": "",
-        }
+        # build_eligibility_payload_from_monday_row validates all required fields
+        # and raises ValueError with a clear message if anything is missing.
+        payload = build_eligibility_payload_from_monday_row(row)
+
+        logger.info(
+            f"[ELG] Sending request | item={item_id} "
+            f"tradingPartnerServiceId={payload.get('tradingPartnerServiceId')}"
+        )
+
+        raw_response = send_realtime_eligibility_check(payload)
+
+        logger.info(f"[ELG] Response received | item={item_id}")
+
+        parsed = parse_stedi_eligibility_response(
+            raw_response,
+            requested_service_type_code=DEFAULT_REQUESTED_SERVICE_TYPE_CODE,
+        )
+
+        writeback = build_monday_writeback_payload(parsed)
+
+        logger.info(
+            f"[ELG] Success | item={item_id} "
+            f"active={parsed.get('eligibility_active')} "
+            f"plan={parsed.get('eligibility_plan_name')!r}"
+        )
+
+        return writeback
+
+    except ValueError as e:
+        # Validation errors (missing fields, unknown payer, invalid DOB, etc.)
+        error_msg = str(e)
+        logger.warning(f"[ELG] Validation error | item={item_id}: {error_msg}")
+        return _error_writeback(error_msg)
 
     except Exception as e:
-        return {
-            "eligibility_error_description": str(e)
-        }
+        # HTTP errors, network failures, Stedi API errors
+        error_msg = str(e)
+        logger.error(f"[ELG] Unexpected error | item={item_id}: {error_msg}", exc_info=True)
+        return _error_writeback(error_msg)
+
+
+def _error_writeback(error_description: str) -> dict[str, Any]:
+    """
+    Return a minimal writeback payload with the error description populated.
+    All other fields are blank so Monday columns are not overwritten.
+    PRD Section 18: always return a consistent structured result shape.
+    """
+    return build_monday_writeback_payload({
+        "eligibility_error_description": error_description,
+    })
