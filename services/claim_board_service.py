@@ -516,15 +516,15 @@ def extract_order_cols(order_item: dict) -> dict:
 # =============================================================================
 
 def _resolve_line(payer_name: str, cgm_coverage: str, cgm_type: str,
-                  item_name: str, hcpc: str, qty: int) -> tuple:
+                  item_name: str, hcpc: str, qty: int,
+                  order_frequency: str = "") -> tuple:
     """
-    Resolve (hcpc, modifiers, claim_qty_str, charge_str) for one service line
-    using claim_assumptions business logic.
+    Resolve (hcpc, modifiers, claim_qty_str, charge_str) for one service line.
 
-    Module-level (not nested) — avoids 'name not defined' scope errors.
-
-    item_name must be exactly as claim_assumptions expects:
-      "Insulin Pump", "Infusion Set 1", "Cartridge", "CGM Sensors", "CGM Monitor"
+    order_frequency is passed through to resolve_cgm_service_unit_count so that
+    CGM Sensors claim quantity matches the Monday Claim Quantity Formula:
+      90-Days → 3 units
+      60-Days → 2 units
     """
     try:
         from claim_assumptions import (
@@ -541,11 +541,11 @@ def _resolve_line(payer_name: str, cgm_coverage: str, cgm_type: str,
 
         # Resolve claim quantity
         if item_name == "CGM Sensors":
-            # CGM sensors: qty / divisor by CGM variant (e.g. Dexcom G7 ÷ 3 = 1 unit)
-            claim_qty_str = resolve_cgm_service_unit_count(cgm_type, qty) or str(qty)
+            # Use frequency-based logic to match Monday formula (90-Days=3, 60-Days=2)
+            claim_qty_str = resolve_cgm_service_unit_count(cgm_type, qty, order_frequency) or str(qty)
         else:
             claim_qty_str = resolve_service_unit_count(
-                payer_name, item_name, "", qty, hcpc
+                payer_name, item_name, "", qty, hcpc, order_frequency
             ) or str(qty)
 
         mods   = resolve_procedure_modifiers(payer_name, hcpc, cgm_coverage)
@@ -646,10 +646,11 @@ def build_service_lines(cols: dict) -> list:
 
     # ── CGM Sensors ───────────────────────────────────────────────────────────
     if cgm_sensor_qty > 0:
-        # cgm_type is passed to _resolve_line → resolve_cgm_service_unit_count(cgm_type, qty)
+        # Pass order_frequency so claim_qty matches the Monday formula (90-Days=3, 60-Days=2)
         hcpc, mods, cqty, charge = _resolve_line(
             payer_name, cgm_coverage, cgm_type,
-            "CGM Sensors", "A4239", cgm_sensor_qty
+            "CGM Sensors", "A4239", cgm_sensor_qty,
+            order_frequency=cols.get("order_frequency", ""),
         )
         lines.append({
             "line_name":           "CGM Sensors",

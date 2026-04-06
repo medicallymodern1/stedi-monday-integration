@@ -200,6 +200,22 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
     dos_raw = parent.get("dos", "")  # YYYY-MM-DD from Monday date column
     dos_stedi = normalize_date(dos_raw)
 
+    # Validate DOS is not in the future — Stedi rejects future service dates (error code 33)
+    if dos_stedi:
+        from datetime import date as _date
+        try:
+            dos_date = _date.fromisoformat(dos_raw)
+            if dos_date > _date.today():
+                raise ValueError(
+                    f"DOS date {dos_raw} is in the future. "
+                    f"Service date cannot be later than today ({_date.today().isoformat()}). "
+                    "Please correct the DOS on the Claims Board and resubmit."
+                )
+        except ValueError as ve:
+            if "DOS date" in str(ve):
+                raise   # re-raise our own error
+            # date parse failed — let Stedi catch it
+
     # Diagnosis — strip dots for Stedi
     diagnosis = (parent.get("diagnosis", "") or "").replace(".", "")
 
@@ -396,6 +412,74 @@ def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SUBMISSION ERROR HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Claims Board primary status column
+_PRIMARY_STATUS_COL = "color_mkxmywtb"   # Primary Status (submission status)
+_STATUS_REQUEST_REJECTED_INDEX = 9        # "Request Rejected" label index
+
+
+def _post_error_update(item_id: str, message: str) -> None:
+    """
+    Post a Monday Updates tab comment on the Claims Board item explaining the error.
+    The team can read this to understand what needs to be fixed before resubmitting.
+    """
+    mutation = """
+    mutation PostUpdate($itemId: ID!, $body: String!) {
+      create_update(item_id: $itemId, body: $body) { id }
+    }
+    """
+    try:
+        run_query(mutation, {"itemId": str(item_id), "body": message})
+        logger.info(f"[SUBMIT] Posted error update to item {item_id}: {message}")
+    except Exception as e:
+        logger.warning(f"[SUBMIT] Failed to post error update: {e}")
+
+
+def _set_status_request_rejected(item_id: str) -> None:
+    """
+    Set the Claims Board primary status to "Request Rejected" (index=9).
+    Used when submission fails due to a data error that needs team action.
+    """
+    mutation = """
+    mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(item_id: $itemId, board_id: $boardId,
+                          column_id: $columnId, value: $value) { id }
+    }
+    """
+    try:
+        run_query(mutation, {
+            "itemId":   str(item_id),
+            "boardId":  str(CLAIMS_BOARD_ID),
+            "columnId": _PRIMARY_STATUS_COL,
+            "value":    json.dumps({"index": _STATUS_REQUEST_REJECTED_INDEX}),
+        })
+        logger.info(f"[SUBMIT] Set item {item_id} → Request Rejected (index=9)")
+    except Exception as e:
+        logger.warning(f"[SUBMIT] Failed to set Request Rejected status: {e}")
+
+
+def _extract_stedi_error(exception: Exception) -> str:
+    """
+    Extract the most useful error message from a Stedi HTTP exception.
+    Tries to pull the first error description from the JSON response body.
+    Falls back to the raw exception message.
+    """
+    try:
+        import requests
+        if isinstance(exception, requests.exceptions.HTTPError):
+            body = exception.response.json()
+            errors = body.get("errors", [])
+            if errors:
+                return errors[0].get("description", str(exception))
+            return body.get("message", str(exception))
+    except Exception:
+        pass
+    return str(exception)
+
+
 async def submit_from_claims_board(item_id: str) -> None:
     """
     Stage B main entry point (PRD Section 5).
@@ -410,13 +494,35 @@ async def submit_from_claims_board(item_id: str) -> None:
 
     if not subitems:
         logger.warning(f"[SUBMIT] No subitems for item {item_id} — cannot submit")
+        _post_error_update(item_id, "Submission failed: no service line subitems found on this Claims Board item.")
         return
 
     logger.info(f"[SUBMIT] Building payload from {len(subitems)} subitem(s)")
-    payload, pcn = build_payload_from_claims_board(parent, subitems)
+
+    try:
+        payload, pcn = build_payload_from_claims_board(parent, subitems)
+    except ValueError as e:
+        # Catches DOS future-date error and any other validation errors
+        error_msg = str(e)
+        logger.error(f"[SUBMIT] Payload validation failed: {error_msg}")
+        _post_error_update(item_id, f"Submission failed: {error_msg}")
+
+        # If DOS is in the future, set primary status → "Request Rejected" (index=9)
+        if "DOS date" in error_msg and "in the future" in error_msg:
+            _set_status_request_rejected(item_id)
+        return
 
     logger.info(f"[SUBMIT] Submitting to Stedi | payer={parent.get('primary_payor')} | pcn={pcn}")
-    response = submit_claim(payload)
+
+    try:
+        response = submit_claim(payload)
+    except Exception as e:
+        # HTTP errors, network failures, Stedi rejections (400, 401, 500 etc.)
+        error_msg = _extract_stedi_error(e)
+        logger.error(f"[SUBMIT] Stedi submission failed: {error_msg}")
+        _post_error_update(item_id, f"Stedi submission error: {error_msg}")
+        _set_status_request_rejected(item_id)
+        return
 
     claim_id = response.get("claim_id", "")
     logger.info(f"[SUBMIT] Submitted: claim_id={claim_id} | pcn={pcn}")

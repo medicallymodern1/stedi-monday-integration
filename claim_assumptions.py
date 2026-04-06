@@ -5,7 +5,6 @@ import string
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-
 # ============================================================
 # SOURCE OF TRUTH: BILLING / CLAIM ASSUMPTIONS
 # ============================================================
@@ -32,15 +31,14 @@ BILLING_PROVIDER_NPI = "1023042348"
 BILLING_PROVIDER_EIN = "113254896"
 BILLING_PROVIDER_TAXONOMY_CODE = "332B00000X"
 
-BILLING_PROVIDER_CONTACT_NAME = "Billing Department"  
-BILLING_PROVIDER_CONTACT_PHONE_NUMBER = "347-503-7148"  
+BILLING_PROVIDER_CONTACT_NAME = "Billing Department"
+BILLING_PROVIDER_CONTACT_PHONE_NUMBER = "347-503-7148"
 
 # For now, submitter is treated as the same entity as the billing provider.
 SUBMITTER_ORGANIZATION_NAME = BILLING_PROVIDER_ORGANIZATION_NAME
 SUBMITTER_IDENTIFICATION = BILLING_PROVIDER_EIN
 SUBMITTER_CONTACT_NAME = BILLING_PROVIDER_CONTACT_NAME
 SUBMITTER_PHONE_NUMBER = BILLING_PROVIDER_CONTACT_PHONE_NUMBER
-
 
 # ============================================================
 # CLAIM-LEVEL DEFAULTS
@@ -51,7 +49,6 @@ DEFAULT_SIGNATURE_INDICATOR = "Y"
 DEFAULT_PLAN_PARTICIPATION_CODE = "A"
 DEFAULT_BENEFITS_ASSIGNMENT_CERTIFICATION_INDICATOR = "Y"
 DEFAULT_RELEASE_INFORMATION_CODE = "Y"
-
 
 # ============================================================
 # PATIENT CONTROL NUMBER RULES
@@ -64,12 +61,14 @@ def generate_patient_control_number(length: int = 17) -> str:
     """Generate a random patient control number."""
     return "".join(secrets.choice(PCN_ALPHABET) for _ in range(length))
 
+
 PROVIDER_CONTROL_NUMBER_ALPHABET = string.ascii_uppercase + string.digits
 
 
 def generate_provider_control_number(length: int = 12) -> str:
     """Generate a random provider control number for one service line."""
     return "".join(secrets.choice(PROVIDER_CONTROL_NUMBER_ALPHABET) for _ in range(length))
+
 
 # ============================================================
 # PAYER MAPPINGS
@@ -121,7 +120,6 @@ CLAIM_FILING_CODE_MAP = {
 
 DEFAULT_CLAIM_FILING_CODE = "CI"
 
-
 # ============================================================
 # BCBS / ANTHEM ROUTING + PLACE OF SERVICE RULES
 # ============================================================
@@ -151,7 +149,6 @@ BCBS_HOME_STATE_PAYER_MAP = {
 # For any other patient home state, default to Anthem Commercial
 # but use POS 11 instead of POS 12.
 DEFAULT_OUT_OF_STATE_BCBS_PAYER_NAME = "Anthem BCBS Commercial"
-
 
 # ============================================================
 # PROCEDURE CODE MAPPINGS
@@ -206,7 +203,7 @@ PAYER_SUPPLY_PROCEDURE_CODE_MAP = {
         "infusion_set": "A4230",
         "cartridge": "A4232",
     },
-     "United Medicare": {
+    "United Medicare": {
         "infusion_set": "A4224",
         "cartridge": "A4225",
     },
@@ -214,7 +211,7 @@ PAYER_SUPPLY_PROCEDURE_CODE_MAP = {
         "infusion_set": "A4231",
         "cartridge": "A4232",
     },
-     "Aetna Medicare": {
+    "Aetna Medicare": {
         "infusion_set": "A4231",
         "cartridge": "A4232",
     },
@@ -251,7 +248,6 @@ PAYER_SUPPLY_PROCEDURE_CODE_MAP = {
         "cartridge": "A4232",
     },
 }
-
 
 # ============================================================
 # SERVICE UNIT COUNT RULES
@@ -306,13 +302,12 @@ QUANTITY_BASED_PROCEDURE_CODES = {
     "A4232",
 }
 
-
 # ============================================================
 # PAYER-SPECIFIC RATE ASSUMPTIONS
 # ============================================================
 
 PAYER_RATE_SCHEDULE = {
-    
+
     "NYSHIP": dict(
         pump_rate=4326.7,
         infusion_rate=24.64,
@@ -581,6 +576,7 @@ def resolve_rate_category_for_procedure_code(payer_name: str, procedure_code: st
 
     return ""
 
+
 def resolve_bcbs_routed_payer_name_and_pos(original_payer_name: str, patient_state: str) -> tuple[str, str]:
     """
     Route BCBS / Anthem family payers based on the patient's home state.
@@ -604,6 +600,7 @@ def resolve_bcbs_routed_payer_name_and_pos(original_payer_name: str, patient_sta
         return BCBS_HOME_STATE_PAYER_MAP[patient_state], DEFAULT_PLACE_OF_SERVICE_CODE
 
     return DEFAULT_OUT_OF_STATE_BCBS_PAYER_NAME, OUT_OF_STATE_BCBS_PLACE_OF_SERVICE_CODE
+
 
 def resolve_payer_name(normalized_order: dict) -> str:
     """
@@ -669,10 +666,25 @@ def resolve_procedure_code(payer_name: str, item_name: str) -> str:
     return ""
 
 
-def resolve_cgm_service_unit_count(variant: str, quantity: Any) -> str:
+def resolve_cgm_service_unit_count(variant: str, quantity: Any,
+                                   order_frequency: str = "") -> str:
     """
-    Resolve service unit count for CGM Sensors based on variant divisor.
+    Resolve service unit count for CGM Sensors.
+
+    Primary rule (matches Monday Claim Quantity Formula exactly):
+      90-Day(s) order → 3 billing units
+      60-Day(s) order → 2 billing units
+
+    Fallback (when frequency unknown): order_qty / variant_divisor.
     """
+    freq = normalize_spaces(order_frequency).rstrip("s")  # "90-Days" -> "90-Day"
+
+    if freq == "90-Day":
+        return "3"
+    if freq == "60-Day":
+        return "2"
+
+    # Fallback: physical box count via variant divisor
     variant = normalize_spaces(variant)
     qty = parse_int(quantity)
 
@@ -681,14 +693,10 @@ def resolve_cgm_service_unit_count(variant: str, quantity: Any) -> str:
 
     divisor = CGM_UNITS_DIVISOR_MAP.get(variant)
     if not divisor:
-        return ""
+        return str(qty) if qty > 0 else ""
 
     units = qty / divisor
-
-    if units.is_integer():
-        return str(int(units))
-
-    return str(units)
+    return str(int(units)) if units.is_integer() else str(units)
 
 
 def resolve_supply_service_unit_count(procedure_code: str, payer_name: str, quantity: Any) -> str:
@@ -712,14 +720,16 @@ def resolve_supply_service_unit_count(procedure_code: str, payer_name: str, quan
 
 
 def resolve_service_unit_count(
-    payer_name: str,
-    item_name: str,
-    variant: str,
-    quantity: Any,
-    procedure_code: str,
+        payer_name: str,
+        item_name: str,
+        variant: str,
+        quantity: Any,
+        procedure_code: str,
+        order_frequency: str = "",
 ) -> str:
     """
     Resolve service unit count based on item type and procedure code.
+    order_frequency is used for CGM Sensors to match the Monday formula.
     """
     item_name = normalize_item_name(item_name)
 
@@ -730,7 +740,7 @@ def resolve_service_unit_count(
         return "1"
 
     if item_name == "CGM Sensors":
-        return resolve_cgm_service_unit_count(variant, quantity)
+        return resolve_cgm_service_unit_count(variant, quantity, order_frequency)
 
     if item_name in INFUSION_SET_ITEM_NAMES or item_name in CARTRIDGE_ITEM_NAMES:
         return resolve_supply_service_unit_count(procedure_code, payer_name, quantity)
@@ -739,9 +749,9 @@ def resolve_service_unit_count(
 
 
 def resolve_procedure_modifiers(
-    payer_name: str,
-    procedure_code: str,
-    cgm_coverage: str,
+        payer_name: str,
+        procedure_code: str,
+        cgm_coverage: str,
 ) -> list[str]:
     """
     Resolve procedure modifiers based on procedure code, payer, and CGM coverage.
@@ -792,9 +802,9 @@ def resolve_procedure_modifiers(
 
 
 def resolve_line_item_charge_amount(
-    payer_name: str,
-    procedure_code: str,
-    service_unit_count: Any,
+        payer_name: str,
+        procedure_code: str,
+        service_unit_count: Any,
 ) -> str:
     """
     Resolve line item charge amount.
@@ -829,6 +839,7 @@ def resolve_line_item_charge_amount(
             return f"{amount:.2f}"
 
     return safe_str(LEGACY_PROCEDURE_CODE_CHARGE_MAP.get(procedure_code, ""))
+
 
 def sum_claim_charge_amount(service_lines: list[dict]) -> str:
     """

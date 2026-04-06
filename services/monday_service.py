@@ -691,7 +691,7 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
             # Write all ERA fields into the subitem using SUBITEM_ERA_COLUMN_MAP
             for field_name, (col_id, col_type) in SUBITEM_ERA_COLUMN_MAP.items():
                 value = child.get(field_name)
-                if value is None or value == "" or value == 0.0:
+                if value is None or value == "":
                     continue
                 try:
                     if col_type == "number":
