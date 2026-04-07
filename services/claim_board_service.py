@@ -867,7 +867,7 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
 def create_claims_board_items_from_order(order_item: dict) -> list:
     """PRD Section 5 Stage A: Order Board item → Claims Board parent + subitems."""
     cols = extract_order_cols(order_item)
-    logger.info(f"[CLAIMS] Processing order: {cols.get('name')} | payer: {cols.get('primary_insurance')}")
+    logger.info(f"[CLAIMS] Processing order: {cols.get('name')}")
 
     lines = build_service_lines(cols)
     if not lines:
@@ -923,7 +923,7 @@ def _create_parent_item(claim: dict) -> str:
 
     patient_name = claim.get("patient_name", "Unknown")
     payer_name   = claim.get("resolved_primary_payor", "")
-    item_name    = f"{patient_name} - {payer_name}" if payer_name else patient_name
+    item_name    = f"{patient_name}"
 
     create_mut = """
     mutation CreateItem($boardId: ID!, $itemName: String!) {
