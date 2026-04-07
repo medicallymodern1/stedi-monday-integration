@@ -342,6 +342,87 @@ async def test_835_manual(transaction_id: str):
 
 # ─── Debug / utility endpoints ────────────────────────────────────────────────
 
+@app.get("/test/claims-board-columns", tags=["Debug"])
+async def get_claims_board_columns():
+    """Get all parent and subitem column IDs and titles from Claims Board"""
+    from services.monday_service import run_query
+    claims_board_id = os.getenv("MONDAY_CLAIMS_BOARD_ID")
+
+    # Step 1: Get parent columns
+    parent_query = """
+    query GetParentColumns($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        columns {
+          id
+          title
+          type
+        }
+      }
+    }
+    """
+    result = run_query(parent_query, {"boardId": claims_board_id})
+    parent_columns = (
+        result.get("data", {})
+        .get("boards", [{}])[0]
+        .get("columns", [])
+    )
+
+    # Step 2: Find any item that has subitems, then read subitem board columns
+    items_query = """
+    query GetItemsWithSubitems($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page(limit: 100) {
+          items {
+            id
+            name
+            subitems {
+              id
+              board {
+                columns {
+                  id
+                  title
+                  type
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    items_result = run_query(items_query, {"boardId": claims_board_id})
+    items = (
+        items_result.get("data", {})
+        .get("boards", [{}])[0]
+        .get("items_page", {})
+        .get("items", [])
+    )
+
+    subitem_columns = []
+    source_item = None
+    for item in items:
+        if item.get("subitems"):
+            subitem_columns = (
+                item["subitems"][0]
+                .get("board", {})
+                .get("columns", [])
+            )
+            source_item = {"id": item["id"], "name": item["name"]}
+            break
+
+    return {
+        "parent_columns": [
+            {"id": c["id"], "title": c["title"], "type": c["type"]}
+            for c in parent_columns
+        ],
+        "subitem_columns": [
+            {"id": c["id"], "title": c["title"], "type": c["type"]}
+            for c in subitem_columns
+        ],
+        "subitem_columns_sourced_from_item": source_item,
+        "note": "No subitems found on any item — subitem_columns will be empty" if not subitem_columns else None,
+    }
+
 @app.get("/test/claims-columns", tags=["Debug"])
 async def get_claims_columns():
     from services.monday_service import run_query

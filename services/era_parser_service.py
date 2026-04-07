@@ -147,6 +147,28 @@ def parse_remark_codes(remark_codes):
     }
 
 
+# 835 Claim Status Code → human-readable label
+CLAIM_STATUS_LABELS = {
+    "1":  "Processed as Primary",
+    "2":  "Processed as Secondary",
+    "3":  "Processed as Tertiary",
+    "4":  "Denied",
+    "5":  "Payer would not provide information",
+    "13": "Suspended",
+    "15": "Processed as Primary, Forwarded to Secondary Payer",
+    "16": "Processed as Secondary, Forwarded to Tertiary Payer",
+    "17": "Payment Reversed",
+    "19": "Processed as Primary, Forwarded to Secondary Payer",
+    "20": "Processed as Secondary, Forwarded to Tertiary Payer",
+    "21": "Information Only",
+    "22": "Reversal of Previous Payment",
+}
+
+def claim_status_label(code: str) -> str:
+    """Return human-readable text for 835 claim status codes"""
+    return CLAIM_STATUS_LABELS.get(str(code).strip(), code)
+
+
 def _parse_single_payment(payment: dict, paid_date: str, remittance_trace: str, era_date: str) -> dict:
     """
     Parse one paymentInfo block → { parent, children }.
@@ -167,13 +189,13 @@ def _parse_single_payment(payment: dict, paid_date: str, remittance_trace: str, 
         "raw_remittance_trace":       remittance_trace,
         "raw_patient_responsibility": format_amount(claim_info.get("patientResponsibilityAmount")),
         "raw_era_date":               era_date,
-        "raw_era_claim_status":       claim_status,
+        "raw_era_claim_status":       claim_status_label(claim_status),  # text not numeric code
         # Existing working parent columns
         "primary_paid":               format_amount(claim_info.get("claimPaymentAmount")),
         "pr_amount":                  format_amount(claim_info.get("patientResponsibilityAmount")),
         "paid_date":                  paid_date,
         "check_number":               remittance_trace,
-        "primary_status":             claim_status,
+        "primary_status":             claim_status_label(claim_status),
     }
 
     logger.info(
@@ -193,21 +215,25 @@ def _parse_single_payment(payment: dict, paid_date: str, remittance_trace: str, 
         parsed_remarks = parse_remark_codes(remarks)
 
         procedure_code = svc_info.get("adjudicatedProcedureCode", "")
+
         service_date   = format_stedi_date(
             line.get("serviceDate") or line.get("serviceStartDate", "")
         )
+
+        line_item_paid = format_amount(svc_info.get("lineItemProviderPaymentAmount"))
 
         child = {
             # ── Fields mapped to Monday subitem columns ──────────────────────
             # Identifiers
             "Raw Line Item Control Number": line.get("lineItemControlNumber", ""),
             "Patient Control #":            patient_control,
-            "Claim Status Code":            claim_status,
+            # "Claim Status Code":            claim_status,
             "HCPC Code":                    procedure_code,
             # Dates & codes
             "Raw Service Date":             service_date,
             # Amounts
-            "Primary Paid":                 format_amount(svc_info.get("lineItemProviderPaymentAmount")),
+            "Primary Paid":                 line_item_paid,   # → numeric_mm11v6th
+            "Raw Line Item Paid Amount":    line_item_paid,   # → numeric_mm201t4y
             "Raw Line Item Charge Amount":  format_amount(svc_info.get("lineItemChargeAmount")),
             "Raw Allowed Actual":           format_amount(svc_supp.get("allowedActual")),
             # Adjustment breakdown (Parsed names — mapped to Monday columns)

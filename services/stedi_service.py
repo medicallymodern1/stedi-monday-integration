@@ -345,7 +345,8 @@ def get_era_as_835_file(transaction_id: str) -> str:
         headers["Accept"] = "application/json"
 
         response = requests.get(
-            f"{STEDI_BASE_URL}/reports/era/{transaction_id}",
+            # f"{STEDI_BASE_URL}/reports/era/{transaction_id}",
+            f"{STEDI_BASE_URL}/change/medicalnetwork/reports/v2/{transaction_id}/835",
             headers=headers,
             timeout=30,
         )

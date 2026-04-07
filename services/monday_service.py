@@ -187,7 +187,7 @@ def create_claims_board_item(order_item: dict, claim_id: str, payer_name: str = 
         return ""
 
     patient_name = order_item.get("name", "Unknown")
-    item_name = f"[TEST] {patient_name} - {payer_name}" if payer_name else f"[TEST] {patient_name}"
+    item_name = f"{patient_name}"
 
     # Step 1: Create the item
     mutation = """
@@ -327,40 +327,40 @@ ERA_PARENT_COLUMN_MAP = {
 # Column IDs verified against subitem column export (document index 2).
 # Keys must match field names produced by era_parser_service.py children dicts.
 SUBITEM_ERA_COLUMN_MAP = {
-    # field key in child dict          column_id               type      # Board title
+    # field key                      column_id               type      # Actual board title
     # ── Identifiers ────────────────────────────────────────────────────────────
-    "Raw Line Item Control Number": ("text_mm1ge9yn",       "text"),    # Raw Line Item Control Number
-    "Patient Control #":            ("text_mm16qhea",       "text"),    # Patient Control #
-    "Claim Status Code":            ("text_mm1gat8c",       "text"),    # Claim Status Code
+    "Raw Line Item Control Number": ("text_mm1gat8c",       "text"),    # Raw Line Item Control Number
+    "Patient Control #":            ("text_mm16qhea",       "text"),    # Primary -->
+    "HCPC Code":            ("text_mm20efx2",       "text"),    # Raw HCPCs  ← repurpose or leave
     # ── Dates ──────────────────────────────────────────────────────────────────
-    "Raw Service Date":             ("date_mm11hscn",       "date"),    # Raw Service Date
+    "Raw Service Date":             ("text_mm1ge9yn",       "text"),    # Raw Service Date (text not date!)
     # ── Amounts ────────────────────────────────────────────────────────────────
-    "Primary Paid":                 ("numeric_mm1czbyg",    "number"),  # Primary Paid (line item paid)
-    "Raw Line Item Charge Amount":  ("numeric_mm11v6th",    "number"),  # Raw Line Item Charge Amount
-    "Raw Allowed Actual":           ("numeric_mm1gg3pj",    "number"),  # Raw Allowed Amount
+    "Primary Paid":                 ("numeric_mm11v6th",    "number"),  # Primary Paid
+    "Raw Line Item Charge Amount":  ("numeric_mm1gg3pj",    "number"),  # Raw Line Item Charge Amount
+    "Raw Allowed Actual":           ("numeric_mm1gtdts",    "number"),  # Raw Allowed Actual
+    "Raw Line Item Paid Amount":    ("numeric_mm201t4y",    "number"),  # Raw Line Item Paid Amount
     # ── PR Adjustment Breakdown ────────────────────────────────────────────────
-    "Parsed PR Amount":             ("numeric_mm1gtdts",    "number"),  # Raw PR Amount (total patient resp)
-    "Parsed Deductible Amount":     ("numeric_mm1gredn",    "number"),  # Raw Deductible Amount (PR-1)
-    "Parsed Coinsurance Amount":    ("numeric_mm1g3nvh",    "number"),  # Raw Coinsurance Amount (PR-2)
-    "Parsed Copay Amount":          ("numeric_mm11aqr1",    "number"),  # Raw Copay Amount (PR-3)
-    "Parsed Other PR Amount":       ("numeric_mm1gtd3e",    "number"),  # Raw Other PR Amount
+    "Parsed PR Amount":             ("numeric_mm1gredn",    "number"),  # Parsed PR Amount
+    "Parsed Deductible Amount":     ("numeric_mm1g3nvh",    "number"),  # Parsed Deductible Amount
+    "Parsed Coinsurance Amount":    ("numeric_mm11aqr1",    "number"),  # Parsed Coinsurance Amount
+    "Parsed Copay Amount":          ("numeric_mm1gtd3e",    "number"),  # Parsed Copay Amount
+    "Parsed Other PR Amount":       ("numeric_mm1g48c",     "number"),  # Parsed Other PR Amount
     # ── CO Adjustment Breakdown ────────────────────────────────────────────────
-    "Parsed CO Amount":             ("numeric_mm1g48c",     "number"),  # Raw CO Amount (total contractual)
-    "Parsed CO-45 Amount":          ("numeric_mm1gken",     "number"),  # Raw CO-45 Amount
-    "Parsed CO-253 Amount":         ("numeric_mm1gt3ky",    "number"),  # Raw CO-253 Amount
-    "Parsed Other CO Amount":       ("numeric_mm1g3vgp",    "number"),  # Raw Other CO Amount
-    # ── OA / PI Adjustments ───────────────────────────────────────────────────
-    "Parsed OA Amount":             ("numeric_mm1grbc3",    "number"),  # Raw OA Amount
-    "Parsed PI Amount":             ("numeric_mm1gh22d",    "number"),  # Raw PI Amount
+    "Parsed CO Amount":             ("numeric_mm1gken",     "number"),  # Parsed CO Amount
+    "Parsed CO-45 Amount":          ("numeric_mm1gt3ky",    "number"),  # Parsed CO-45 Amount
+    "Parsed CO-253 Amount":         ("numeric_mm1g3vgp",    "number"),  # Parsed CO-253 Amount
+    "Parsed Other CO Amount":       ("numeric_mm1grbc3",    "number"),  # Parsed Other CO Amount
+    # ── OA / PI ───────────────────────────────────────────────────────────────
+    "Parsed OA Amount":             ("numeric_mm1gh22d",    "number"),  # Parsed OA Amount
+    "Parsed PI Amount":             ("numeric_mm1gqkvz",    "number"),  # Parsed PI Amount
     # ── Code Strings ──────────────────────────────────────────────────────────
-    "Parsed Adjustment Codes":      ("text_mm1gt1dh",       "text"),    # Raw Adjustment Codes (e.g. CO-45; PR-1)
+    "Parsed Adjustment Codes":      ("text_mm1gt1dh",       "text"),    # Parsed Adjustment Codes
     "Parsed CARC Codes":            ("text_mm20ke2s",       "text"),    # Raw CARC Codes
     "Parsed RARC Codes":            ("text_mm20brp",        "text"),    # Raw RARC Codes
-    "Parsed Remark Codes":          ("text_mm1g6tw3",       "text"),    # Raw Remark Codes
-    "Parsed Remark Text":           ("long_text_mm1ggyz6",  "long_text"), # Raw Remark Text
-    "Parsed Adjustment Reasons":    ("long_text_mm1g7xmy",  "long_text"), # Raw Adjustment Reasons
+    "Parsed Remark Codes":          ("text_mm1g6tw3",       "text"),    # Parsed Remark Codes
+    "Parsed Remark Text":           ("long_text_mm1ggyz6",  "long_text"), # Parsed Remark Text
+    "Parsed Adjustment Reasons":    ("long_text_mm1g7xmy",  "long_text"), # Parsed Adjustment Reasons
 }
-
 
 def populate_era_data_on_claims_item(claims_item_id: str, era_data: dict) -> None:
     """
