@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 GENERAL_PAYER_ID_MAP: dict[str, str] = {
     "Anthem BCBS":        "803",
     "Fidelis":            "11315",
-    "Medicare A&B":       "16013",
+    "Medicare A&B":       "CMS",
     "NYSHIP Empire":      "87726",
     "United Healthcare":  "87726",
     "UMR":                "87726",
@@ -45,7 +45,7 @@ GENERAL_PAYER_ID_MAP: dict[str, str] = {
 STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID: dict[str, str] = {
     "803":                    "Anthem Blue Cross Blue Shield of New York",
     "11315":                  "Fidelis Care",
-    "16013":                  "Medicare Part B",
+    "CMS":                    "Medicare Part B",
     "87726":                  "UnitedHealthcare",
     "60054":                  "Aetna",
     "14163":                  "Wellcare",
