@@ -355,7 +355,7 @@ PAYER_RATE_SCHEDULE = {
         infusion_rate=29.07,
         cartridge_rate=3.62,
         monitor_rate=322.63,
-        sensor_rate=306.75,
+        sensor_rate=318.00,
     ),
     "Medicaid": dict(
         pump_rate=4440.0,
