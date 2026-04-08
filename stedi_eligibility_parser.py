@@ -194,6 +194,7 @@ def _is_medicare_advantage(response: dict) -> bool:
 
 
 def _is_medicaid(response: dict) -> bool:
+    # Check benefit rows for Medicaid insurance type or plan keywords
     for row in _benefits(response):
         ins_type = (row.get("insuranceType") or "").lower().strip()
         if ins_type in _MEDICAID_INSURANCE_TYPES:
@@ -203,6 +204,24 @@ def _is_medicaid(response: dict) -> bool:
             group = (row.get("groupDescription") or "").lower()
             if kw in plan or kw in group:
                 return True
+
+    # Check planInformation (Fidelis returns medicaidRecipientIdNumber here)
+    pi = response.get("planInformation") or {}
+    if pi.get("medicaidRecipientIdNumber"):
+        return True
+
+    # Check planInformation.groupDescription / planDescription for Medicaid keywords
+    for field in ("groupDescription", "planDescription"):
+        val = (pi.get(field) or "").lower()
+        for kw in _MEDICAID_PLAN_KEYWORDS:
+            if kw in val:
+                return True
+
+    # Check payer name for Medicaid signals (e.g. NYSDOH, eMedNY)
+    payer_name = (response.get("payer", {}).get("name") or "").lower()
+    if any(kw in payer_name for kw in ("medicaid", "nysdoh", "emedny", "doh")):
+        return True
+
     return False
 
 
@@ -238,50 +257,71 @@ def _parse_coverage_type(response: dict) -> str:
 def _parse_payer_name(response: dict, coverage_type: str) -> str:
     """
     Operational payer name for the intake team.
-    - Medicare A&B → 'Medicare A&B'
-    - MA / commercial / Medicaid → actual carrier from the response
+
+    - Medicare A&B  → "Medicare A&B"
+    - Medicare Advantage → MA carrier name (not the CMS routing payer)
+    - Commercial / Medicaid → payer name from the response
     """
     if coverage_type == "Medicare A&B":
         return "Medicare A&B"
 
-    # Try subscriber/entity information first (most reliable carrier name)
-    for entity in response.get("subscriberInformation", {}).get("additionalInformation", {}).get("entityInformation", []):
-        name = (entity.get("entityName") or "").strip()
-        if name:
-            return name
+    # Medicare Advantage: use the same logic as _parse_ma_carrier so Stedi Payer Name
+    # and Stedi Medicare Advantage Carrier always show the same value —
+    # the most operationally useful MA plan identifier per client PRD feedback.
+    if coverage_type == "Medicare Advantage":
+        carrier = _parse_ma_carrier(response, coverage_type)
+        if carrier:
+            return carrier
 
-    # Try payer-level name fields
+    # Non-MA: payer-level name fields
     payer = response.get("payer", {})
     for key in ("name", "payerName", "entityName"):
         name = (payer.get(key) or "").strip()
         if name:
             return name
 
-    # Fall back to benefit row entity names
-    for row in _benefits(response):
-        for entity in (row.get("entityInformation") or []):
-            name = (entity.get("entityName") or "").strip()
-            if name:
-                return name
-
     return ""
 
 
 def _parse_plan_name(response: dict, coverage_type: str) -> str:
-    """Clearest returned plan label per PRD rules."""
+    """
+    Clearest returned plan label per PRD rules.
+
+    For Medicare Advantage: use benefitsAdditionalInformation.planNetworkDescription
+    from MA-signal rows (insuranceTypeCode HN, code R or U rows that carry MA plan info).
+    This is the correct source — e.g. "Humana Gold Plus H4141-017".
+    Do NOT use benefitsRelatedEntity.entityName for plan name (that is the carrier name).
+
+    For United Dual / managed care: planCoverage on the MA row carries the full plan name,
+    e.g. "NY UNITEDHEALTHCARE DUAL COMPLETE HMOPOS FULL H338".
+    For commercial / Medicaid: planCoverage then planDetails.
+    """
     if coverage_type == "Medicare A&B":
         return ""   # PRD: blank if no meaningful plan label
 
+    # Pass 1 — MA plan name from benefitsAdditionalInformation.planNetworkDescription.
+    # Only look at rows that are MA-carrier signal rows: insuranceTypeCode HN (Medicare Risk
+    # HMO contact/referral rows) or code R/U (Other Payor / Contact Following Entity rows
+    # that carry MA plan metadata alongside the carrier entity name).
+    _ma_bai_codes = {"HN", "OT"}  # insuranceTypeCode values that carry MA carrier info
     for row in _benefits(response):
-        # Prefer planNetworkDescription (MA carrier plan name)
-        v = (row.get("planNetworkDescription") or "").strip()
-        if v:
-            return v
-        # Then planCoverage (dual / managed care plan names)
+        ins_code = (row.get("insuranceTypeCode") or "").upper()
+        row_code = (row.get("code") or "").upper()
+        bai = row.get("benefitsAdditionalInformation") or {}
+        pnd = (bai.get("planNetworkDescription") or "").strip()
+        if pnd and (ins_code in _ma_bai_codes or row_code in ("R", "U")):
+            return pnd
+
+    # Pass 2 — planCoverage on any benefit row.
+    # Catches United Dual Complete, Medicaid managed care (Fidelis HealthierLife Plan,
+    # Anthem NY SSI HARP), and other managed plan names.
+    for row in _benefits(response):
         v = (row.get("planCoverage") or "").strip()
         if v:
             return v
-        # Then planDetails (commercial, e.g. "Aetna Choice POS II")
+
+    # Pass 3 — planDetails (commercial, e.g. "Aetna Choice POS II")
+    for row in _benefits(response):
         v = (row.get("planDetails") or "").strip()
         if v:
             return v
@@ -294,20 +334,79 @@ def _parse_ma_flag(coverage_type: str) -> str:
 
 
 def _parse_ma_carrier(response: dict, coverage_type: str) -> str:
-    """Populate only when MA; return actual carrier entity name."""
+    """
+    Populate only when MA; return the most operationally useful MA plan identifier.
+
+    Per client PRD feedback, priority order is:
+      1. benefitsAdditionalInformation.planNetworkDescription — the MA plan name
+         (e.g. "Humana Gold Plus H4141-017"). Present on Humana/CMS responses.
+      2. planCoverage on the MA active coverage row — the full plan label
+         (e.g. "NY UNITEDHEALTHCARE DUAL COMPLETE HMOPOS FULL H338"). Present on
+         United and other Direct responses where planNetworkDescription is absent.
+      3. benefitsRelatedEntity/Entities entityName — the carrier org name.
+         Fallback when neither plan label is returned.
+
+    We intentionally skip payer.name for CMS-routed lookups (payer ID 16013)
+    because it returns "CMS" rather than the actual MA carrier.
+    """
     if coverage_type != "Medicare Advantage":
         return ""
 
-    # Look for entityInformation inside benefit rows
+    # Pass 1: planNetworkDescription from benefitsAdditionalInformation
+    # on MA-signal rows (insuranceTypeCode HN/OT, or code R/U).
+    # This is the clearest plan-level identifier (e.g. "Humana Gold Plus H4141-017").
+    _ma_bai_codes = {"HN", "OT"}
     for row in _benefits(response):
-        for entity in (row.get("entityInformation") or []):
+        ins_code = (row.get("insuranceTypeCode") or "").upper()
+        row_code = (row.get("code") or "").upper()
+        is_ma_row = ins_code in _ma_bai_codes or row_code in ("R", "U")
+        if not is_ma_row:
+            continue
+        bai = row.get("benefitsAdditionalInformation") or {}
+        pnd = (bai.get("planNetworkDescription") or "").strip()
+        if pnd:
+            return pnd
+
+    # Pass 2: planCoverage on any MA-typed active coverage row
+    # (e.g. "NY UNITEDHEALTHCARE DUAL COMPLETE HMOPOS FULL H338" on MP rows).
+    _ma_ins_types = {
+        "medicare primary", "medicare risk",
+        "health maintenance organization (hmo) - medicare risk",
+        "preferred provider organization (ppo) - medicare risk",
+        "exclusive provider organization (epo) - medicare risk",
+        "point of service (pos) - medicare risk",
+    }
+    for row in _benefits(response):
+        ins_type = (row.get("insuranceType") or "").lower().strip()
+        if ins_type not in _ma_ins_types:
+            continue
+        pc = (row.get("planCoverage") or "").strip()
+        if pc:
+            return pc
+
+    # Pass 3: carrier entity name from MA-signal rows (last resort)
+    for row in _benefits(response):
+        ins_code = (row.get("insuranceTypeCode") or "").upper()
+        row_code = (row.get("code") or "").upper()
+        is_ma_row = ins_code in _ma_bai_codes or row_code in ("R", "U")
+        if not is_ma_row:
+            continue
+        for entity in (row.get("benefitsRelatedEntities") or []):
             name = (entity.get("entityName") or "").strip()
             if name:
                 return name
+        bre = row.get("benefitsRelatedEntity") or {}
+        name = (bre.get("entityName") or "").strip()
+        if name:
+            return name
 
-    # Fall back to payer name
+    # Final fallback: payer name only if not CMS-routed
     payer = response.get("payer", {})
-    return (payer.get("name") or payer.get("entityName") or "").strip()
+    payer_name = (payer.get("name") or payer.get("entityName") or "").strip()
+    if payer_name.upper() not in ("CMS", ""):
+        return payer_name
+
+    return ""
 
 
 def _parse_ma_member_id(response: dict, coverage_type: str) -> str:
@@ -367,7 +466,13 @@ def _parse_secondary_medicaid_id(response: dict) -> str:
     - United dual: "Not returned" if planCoverage contains "Dual" and no ID returned.
     - All others: blank unless ID is explicitly returned.
     """
-    # 1. Check for explicit medicaidRecipientIdNumber (Fidelis pattern)
+    # 1a. Check top-level planInformation.medicaidRecipientIdNumber (Fidelis pattern).
+    #     This is the primary structured source per PRD — use it first.
+    pi_mid = (response.get("planInformation") or {}).get("medicaidRecipientIdNumber") or ""
+    if pi_mid.strip():
+        return pi_mid.strip()
+
+    # 1b. Check benefitsInformation rows for medicaidRecipientIdNumber (legacy fallback)
     for row in _benefits(response):
         mid = (row.get("medicaidRecipientIdNumber") or "").strip()
         if mid:
@@ -394,6 +499,19 @@ def _parse_secondary_medicaid_id(response: dict) -> str:
         # United Dual pattern
         if "dual" in plan_cov and "not returned" not in plan_cov:
             return "Not returned"
+
+    # Check benefitsRelatedEntities for Medicare/Medicaid crossover entity names
+    # (e.g. NYSDOH response lists "MEDICARE ABDQMB" as a prior insurance carrier)
+    for row in _benefits(response):
+        for entity in (row.get("benefitsRelatedEntities") or []):
+            ename = (entity.get("entityName") or "").lower()
+            if "medicare" in ename and "medicaid" in ename:
+                return "Not returned"
+            # "MEDICARE ABDQMB" pattern — ABD = Aged Blind Disabled (Medicare+Medicaid dual)
+            if "abd" in ename and "medicare" in ename:
+                return "Not returned"
+            if "qmb" in ename:
+                return "Not returned"
 
     return ""
 
@@ -489,6 +607,14 @@ def _parse_financial_field(
     coverage_level: str,
     time_qualifier: str,
 ) -> str:
+    """
+    Find the best matching deductible or OOP row.
+
+    Pass 1: strict match — coverageLevelCode + timeQualifierCode required.
+    Pass 2: fallback for plain Medicare/QMB responses where CMS omits
+            coverageLevelCode entirely. Accept rows where coverageLevelCode
+            is absent but code and timeQualifierCode match.
+    """
     row = _select_benefit_row(
         _benefits(response),
         code=code,
@@ -499,6 +625,32 @@ def _parse_financial_field(
         v = _usable_amount(row)
         if v is not None:
             return v
+
+    # Fallback: accept rows with no coverageLevelCode (CMS/Medicare omits it for Part B rows).
+    # Constraints:
+    #   - Only accept rows that lack a coverageLevelCode entirely (CMS omission pattern)
+    #   - For FAM lookups: if row has no coverageLevelCode we cannot confirm it is FAM → skip
+    #   - Only accept Part B (MB) or QMB (QM) rows — not Part A (MA) rows
+    if coverage_level == "FAM":
+        return ""  # Cannot infer FAM from rows that omit coverageLevelCode
+
+    _mb_type_codes = {"MB", "QM", ""}  # Part B, QMB, or unspecified
+    _exclude_type_codes = {"MA"}        # Part A — never use for deductible/OOP fallback
+
+    for row in _benefits(response):
+        if row.get("code") != code:
+            continue
+        if row.get("coverageLevelCode"):  # has a level code but wrong one — skip
+            continue
+        if row.get("timeQualifierCode") != time_qualifier:
+            continue
+        ins_type_code = (row.get("insuranceTypeCode") or "").upper()
+        if ins_type_code in _exclude_type_codes:
+            continue  # skip Part A rows
+        v = _usable_amount(row)
+        if v is not None:
+            return v
+
     return ""
 
 
