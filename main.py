@@ -104,6 +104,47 @@ async def test_era_parse(body: EraTestBody):
     }
 
 
+@app.post("/test/claim-payload/{item_id}", tags=["Testing"])
+async def test_claim_payload_only(item_id: str):
+    """
+    Dry run: reads Claims Board item + subitems → builds Stedi payload → returns it.
+    Does NOT submit to Stedi.
+
+    Pass a Claims Board item ID (Stage B input), NOT an Order Board item ID.
+    Use /test/create-claims-from-order/{order_item_id} first if you only have
+    an Order Board item and want to run Stage A before inspecting the payload.
+    """
+    from services.claims_submission_service import (
+        get_claims_item_with_subitems,
+        extract_parent_fields,
+        extract_subitem_fields,
+        build_payload_from_claims_board,
+    )
+
+    try:
+        claims_item = get_claims_item_with_subitems(item_id)
+        parent = extract_parent_fields(claims_item)
+        subitems = [extract_subitem_fields(s) for s in claims_item.get("subitems", [])]
+
+        if not subitems:
+            return {
+                "status": "error",
+                "item_id": item_id,
+                "error": "No subitems found on this Claims Board item — run Stage A first.",
+            }
+
+        payload, pcn = build_payload_from_claims_board(parent, subitems)
+        return {
+            "status": "ok",
+            "item_id": item_id,
+            "pcn": pcn,
+            "payload": payload,
+        }
+    except Exception as e:
+        logger.error(f"claim-payload test failed: {e}", exc_info=True)
+        return {"status": "error", "item_id": item_id, "error": str(e)}
+
+
 @app.post("/test/era-to-monday/{claims_item_id}", tags=["Testing"])
 async def test_era_to_monday(claims_item_id: str, request: Request):
     from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
@@ -130,6 +171,7 @@ async def test_era_to_monday(claims_item_id: str, request: Request):
         "fields_written": {k: v for k, v in summary.items() if k != "children"},
         "service_lines": len(summary.get("children", [])),
     }
+
 
 @app.post("/test/create-claims-from-order/{item_id}", tags=["Testing"])
 async def test_create_claims_from_order(item_id: str):
@@ -741,52 +783,6 @@ async def get_onboarding_board_columns():
     return [{"id": c["id"], "title": c["title"], "type": c["type"]} for c in cols]
 
 
-@app.post("/test/eligibility/{item_id}", tags=["Testing"])
-async def test_eligibility_dry_run(item_id: str):
-    """
-    Dry run: fetch item, build payload, run eligibility, return results.
-    Does NOT write to Monday — for testing only.
-    """
-    from routes.eligibility_webhook import fetch_onboarding_item
-    from stedi_eligibility import run_parse_and_build_monday_writeback
-
-    try:
-        row = fetch_onboarding_item(item_id)
-        writeback = run_parse_and_build_monday_writeback(
-            row,
-            api_key=os.getenv("STEDI_API_KEY"),
-        )
-        return {
-            "status": "success",
-            "item_id": item_id,
-            "input_row": row,
-            "eligibility_results": writeback,
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "item_id": item_id,
-            "error": str(e),
-        }
-
-
-@app.post("/test/eligibility-payload/{item_id}", tags=["Testing"])
-async def test_eligibility_payload_only(item_id: str):
-    """
-    Build and return Stedi payload without sending it.
-    Use to verify payload is correct before making a real API call.
-    """
-    from routes.eligibility_webhook import fetch_onboarding_item
-    from stedi_eligibility import build_eligibility_payload_from_monday_row
-
-    try:
-        row = fetch_onboarding_item(item_id)
-        print("row:", row)
-        payload = build_eligibility_payload_from_monday_row(row)
-        return {"status": "ok", "payload": payload}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
 @app.post("/test/full-claim-flow/{item_id}", tags=["Testing"])
 async def test_full_claim_flow(item_id: str):
     """
@@ -842,7 +838,7 @@ async def test_full_claim_flow(item_id: str):
             era_rows = parse_era_from_string(era_content)
 
             if not era_rows:
-                # add_update(item_id, "❌ ERA parsing failed")
+                # add_update(item_id, "ERA parsing failed")
                 continue
 
             # Step 6: Write to Monday
@@ -851,7 +847,7 @@ async def test_full_claim_flow(item_id: str):
 
                 populate_era_data_on_claims_item(item_id, summary)
 
-            # add_update(item_id, "💰 ERA processed successfully")
+            # add_update(item_id, "ERA processed successfully")
 
             results.append({
                 "claim_id": claim_id,
@@ -871,3 +867,187 @@ async def test_full_claim_flow(item_id: str):
             "status": "error",
             "error": str(e)
         }
+
+
+# ─── Eligibility Testing Endpoints ───────────────────────────────────────────
+#
+# TESTING ORDER:
+#   Step 1 → /eligibility/test/payload/{item_id}   Verify inputs + payer mapping (no Stedi call)
+#   Step 2 → /eligibility/test/dry-run/{item_id}   Full Stedi call, NO Monday write
+#   Step 3 → /eligibility/test/run/{item_id}        Full Stedi call + WRITES to Monday
+#
+# All three are safe to call repeatedly. Only Step 3 modifies Monday.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post(
+    "/eligibility/test/payload/{item_id}",
+    tags=["Eligibility Testing"],
+    summary="Step 1 — Build payload only (no Stedi call, no Monday write)",
+)
+async def eligibility_test_payload(item_id: str):
+    """
+    **Step 1 — Safe to run first.**
+
+    Fetches the Intake Board item, extracts eligibility inputs, and builds
+    the Stedi request payload — but does NOT send it to Stedi and does NOT
+    write anything to Monday.
+
+    Use this to verify:
+    - The item's `General Insurance` label maps to a known payer ID
+    - `Member ID`, `DOB`, `First Name`, `Last Name` are extracted correctly
+    - The Stedi payload structure looks right before a live call
+
+    **Returns:**
+    - `input_row` — what was read from Monday
+    - `payload` — the exact JSON that would be sent to Stedi
+    - `error` — validation message if any required field is missing
+    """
+    from routes.eligibility_webhook import fetch_intake_item
+    from services.eligibility_service import extract_eligibility_inputs
+    from stedi_eligibility_builder import build_eligibility_payload
+
+    try:
+        monday_item = fetch_intake_item(item_id)
+        row         = extract_eligibility_inputs(monday_item)
+        payload     = build_eligibility_payload(row)
+        # Strip internal _meta before returning — it's logging-only
+        display_payload = {k: v for k, v in payload.items() if k != "_meta"}
+        return {
+            "status":    "ok",
+            "item_id":   item_id,
+            "input_row": row,
+            "payload":   display_payload,
+            "note":      "Payload built successfully. Run Step 2 to send to Stedi.",
+        }
+    except ValueError as e:
+        return {
+            "status":  "validation_error",
+            "item_id": item_id,
+            "error":   str(e),
+            "note":    "Fix the validation error above before proceeding to Step 2.",
+        }
+    except Exception as e:
+        logger.error(f"[ELIG-TEST-PAYLOAD] item={item_id}: {e}", exc_info=True)
+        return {"status": "error", "item_id": item_id, "error": str(e)}
+
+
+@app.post(
+    "/eligibility/test/dry-run/{item_id}",
+    tags=["Eligibility Testing"],
+    summary="Step 2 — Full Stedi call, NO Monday write",
+)
+async def eligibility_test_dry_run(item_id: str):
+    """
+    **Step 2 — Calls Stedi, does NOT write to Monday.**
+
+    Runs the full eligibility pipeline end-to-end:
+    1. Fetch item from Monday Intake Board
+    2. Build Stedi payload
+    3. Send to Stedi eligibility API
+    4. Parse all 23 output fields from the response
+
+    Nothing is written back to Monday — safe to run as many times as needed.
+
+    Use this to verify:
+    - Stedi returns a valid response for this patient/payer combination
+    - All 23 output fields are parsed correctly
+    - Coverage type, MA flag, deductibles, OOP max etc. look right
+
+    **Returns:**
+    - `input_row` — what was read from Monday
+    - `eligibility_results` — all 23 parsed output fields
+    - `error` — Stedi error message if the request failed
+    """
+    from routes.eligibility_webhook import fetch_intake_item
+    from services.eligibility_service import run_eligibility_check, extract_eligibility_inputs
+
+    try:
+        monday_item = fetch_intake_item(item_id)
+        row         = extract_eligibility_inputs(monday_item)
+        writeback   = run_eligibility_check(monday_item)
+        return {
+            "status":              "success",
+            "item_id":             item_id,
+            "input_row":           row,
+            "eligibility_results": writeback,
+            "note":                "Results NOT written to Monday. Run Step 3 to write.",
+        }
+    except Exception as e:
+        logger.error(f"[ELIG-TEST-DRY-RUN] item={item_id}: {e}", exc_info=True)
+        return {"status": "error", "item_id": item_id, "error": str(e)}
+
+
+@app.post(
+    "/eligibility/test/run/{item_id}",
+    tags=["Eligibility Testing"],
+    summary="Step 3 — Full Stedi call + WRITES results to Monday ⚠️",
+)
+async def eligibility_test_run_and_write(item_id: str):
+    """
+    **Step 3 — Calls Stedi AND writes all results back to Monday.**
+
+    This is the same flow the webhook uses — it's the real thing.
+    Run this after Step 2 confirms the results look correct.
+
+    Flow:
+    1. Fetch item from Monday Intake Board
+    2. Build + send Stedi eligibility request
+    3. Parse all 23 output fields
+    4. Write non-blank fields back to the Intake Board item
+
+    ⚠️ **This WILL update the Monday item.** Blank fields are skipped
+    (existing Monday values are preserved). "Not returned" IS written.
+
+    **Returns:**
+    - `results` — all 23 parsed fields (same as Step 2)
+    - `written_to_monday` — confirms write was attempted
+    """
+    from routes.eligibility_webhook import fetch_intake_item
+    from services.eligibility_monday_service import run_and_write_eligibility
+
+    try:
+        monday_item = fetch_intake_item(item_id)
+        writeback   = run_and_write_eligibility(item_id, monday_item)
+        return {
+            "status":           "success",
+            "item_id":          item_id,
+            "results":          writeback,
+            "written_to_monday": True,
+            "note":             "Check the Monday Intake Board item — Stedi columns should now be populated.",
+        }
+    except Exception as e:
+        logger.error(f"[ELIG-TEST-RUN] item={item_id}: {e}", exc_info=True)
+        return {"status": "error", "item_id": item_id, "error": str(e)}
+
+
+@app.get(
+    "/eligibility/test/intake-board-columns",
+    tags=["Eligibility Testing"],
+    summary="Debug — List all Intake Board column IDs",
+)
+async def eligibility_test_intake_board_columns():
+    """
+    Returns all column IDs, titles, and types from the Monday Intake Board.
+
+    Use this to verify column IDs after any board structure changes.
+    The IDs here should match what's hardcoded in `eligibility_service.py`
+    and `eligibility_monday_service.py`.
+    """
+    from services.monday_service import run_query
+    board_id = os.getenv("MONDAY_INTAKE_BOARD_ID")
+    if not board_id:
+        return JSONResponse(
+            {"error": "MONDAY_INTAKE_BOARD_ID env var not set — add it to your .env file"},
+            status_code=400,
+        )
+    query = """
+    query ($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        columns { id title type }
+      }
+    }
+    """
+    result = run_query(query, {"boardId": board_id})
+    cols   = result.get("data", {}).get("boards", [{}])[0].get("columns", [])
+    return [{"id": c["id"], "title": c["title"], "type": c["type"]} for c in cols]

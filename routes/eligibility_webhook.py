@@ -1,161 +1,236 @@
 """
 routes/eligibility_webhook.py
-Handles eligibility check requests triggered from Monday.
+==============================
+FastAPI router for the Stedi eligibility flow.
+
+This router is completely isolated from the claims/ERA pipeline.
+It only touches: Intake Board reads + Intake Board writes (Stedi output columns).
+
+Trigger:
+  Monday Intake Board → "Run Stedi Eligibility" column → set to "Run"
+  → POST /eligibility/trigger  (Monday webhook)
+
+Manual run (same result as trigger, no Monday column change needed):
+  POST /eligibility/run/{item_id}
+
+Test endpoints (no Monday write):
+  POST /eligibility/test/{item_id}           — full dry run, returns writeback dict
+  POST /eligibility/test/payload/{item_id}   — build + return payload only (no Stedi call)
+
+Debug:
+  GET  /eligibility/intake-board-columns     — list all Intake Board column IDs
 """
+
+from __future__ import annotations
 
 import logging
 import os
-from fastapi import APIRouter, BackgroundTasks, Request
+from typing import Any
+
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from services.monday_service import run_query
+from services.eligibility_monday_service import run_and_write_eligibility
+from services.eligibility_service import run_eligibility_check, extract_eligibility_inputs
+from stedi_eligibility_builder import build_eligibility_payload
+
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["Eligibility"])
+router = APIRouter()
+
+INTAKE_BOARD_ID     = os.getenv("MONDAY_INTAKE_BOARD_ID", "")
+INTAKE_COL_RUN_ELIG = "color_mm1yeksx"   # "Run Stedi Eligibility" — verified from board export
+RUN_TRIGGER_VALUE   = "Run"              # The status label that fires the check
 
 
-@router.post("/check/{item_id}")
-async def trigger_eligibility_check(item_id: str, background_tasks: BackgroundTasks):
-    """
-    Trigger a real-time eligibility check for a Monday Onboarding Board item.
-    Returns 200 immediately; processes asynchronously.
-    """
-    logger.info(f"Eligibility check triggered for item_id={item_id}")
-    background_tasks.add_task(run_eligibility_for_item, item_id)
-    return JSONResponse({"status": "queued", "item_id": item_id}, status_code=200)
+# =============================================================================
+# Utilities
+# =============================================================================
+
+def _ack(challenge: str | None = None) -> JSONResponse:
+    """Monday challenge handshake — always respond immediately."""
+    if challenge:
+        return JSONResponse({"challenge": challenge})
+    return JSONResponse({"status": "ok"})
 
 
-@router.post("/webhook")
-async def eligibility_monday_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    Receive Monday webhook trigger for eligibility check.
-    Fires when status changes on the New Onboarding Board.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "invalid json"}, status_code=400)
-
-    if "challenge" in body:
-        return JSONResponse({"challenge": body["challenge"]})
-
-    event = body.get("event", {})
-    item_id = str(event.get("pulseId") or event.get("itemId") or "")
-    new_label = event.get("value", {}).get("label", {}).get("text", "")
-
-    logger.info(f"Eligibility webhook: label='{new_label}' | item={item_id}")
-
-    # Trigger on "Check Eligibility" status — confirm label with Brandon
-    if new_label in ("Check Eligibility", "Run Eligibility"):
-        background_tasks.add_task(run_eligibility_for_item, item_id)
-    else:
-        logger.info(f"Ignored status: {new_label}")
-
-    return JSONResponse({"status": "received"}, status_code=200)
-
-
-async def run_eligibility_for_item(item_id: str) -> None:
-    """
-    Full eligibility pipeline for one Monday item:
-    1. Fetch item from Monday Onboarding Board
-    2. Extract required fields
-    3. Build + send Stedi eligibility request
-    4. Parse response
-    5. Write results back to Monday
-    """
-    from services.monday_service import run_query
-    from stedi_eligibility import run_parse_and_build_monday_writeback
-    from stedi_eligibility_monday_mapping import extract_eligibility_inputs_from_monday_item
-    from services.eligibility_monday_service import write_eligibility_to_monday
-
-    logger.info(f"[ELG] Starting eligibility for item_id={item_id}")
-
-    # Step 1: Fetch item from Monday Onboarding Board
-    try:
-        row = fetch_onboarding_item(item_id)
-    except Exception as e:
-        logger.error(f"[ELG] Failed to fetch Monday item: {e}")
-        return
-
-    logger.info(f"[ELG] Fetched item: {row.get('Name', item_id)}")
-
-    # Step 2: Run eligibility + parse
-    try:
-        writeback_payload = run_parse_and_build_monday_writeback(
-            row,
-            api_key=os.getenv("STEDI_API_KEY"),
-        )
-        logger.info(f"[ELG] Eligibility completed: active={writeback_payload.get('Stedi Eligibility Active?')}")
-    except ValueError as e:
-        # Validation error — write error back to Monday
-        logger.warning(f"[ELG] Validation error: {e}")
-        writeback_payload = {
-            "Stedi Eligibility Error Description": str(e)
-        }
-    except Exception as e:
-        logger.error(f"[ELG] Eligibility failed: {e}", exc_info=True)
-        writeback_payload = {
-            "Stedi Eligibility Error Description": f"Eligibility check failed: {str(e)}"
-        }
-
-    # Step 3: Write results back to Monday
-    try:
-        write_eligibility_to_monday(item_id, writeback_payload)
-        logger.info(f"[ELG] Results written to Monday item {item_id}")
-    except Exception as e:
-        logger.error(f"[ELG] Failed to write results to Monday: {e}", exc_info=True)
-
-
-def fetch_onboarding_item(item_id: str) -> dict:
-    """
-    Fetch a New Onboarding Board item from Monday.
-    Returns a flat dict matching Brandon's expected row format.
-    """
-    from services.monday_service import run_query
-
+def fetch_intake_item(item_id: str) -> dict:
+    """Fetch a single Intake Board item with all column_values."""
     query = """
-    query GetItem($itemId: ID!) {
+    query GetIntakeItem($itemId: ID!) {
       items(ids: [$itemId]) {
         id
         name
-        column_values {
-          id
-          text
-          value
-        }
+        column_values { id text value }
       }
     }
     """
     result = run_query(query, {"itemId": item_id})
     items = result.get("data", {}).get("items", [])
     if not items:
-        raise ValueError(f"No item found for item_id={item_id}")
+        raise ValueError(f"Item {item_id} not found on Intake Board")
+    return items[0]
 
-    item = items[0]
-    col_values = {col.get("id"): col.get("text", "") or "" for col in item.get("column_values", [])}
 
-    # Map Monday column IDs → Brandon's expected field names
-    # UPDATE THESE IDs once Brandon confirms them from the Onboarding Board
-    ONBOARDING_COLUMN_MAP = {
-        os.getenv("ELIG_COL_INSURANCE",  "color_insurance"):   "Primary Insurance Final",
-        os.getenv("ELIG_COL_MEMBER_ID",  "text_member_id"):    "Member ID",
-        os.getenv("ELIG_COL_FIRST_NAME", "text_first_name"):   "First Name",
-        os.getenv("ELIG_COL_LAST_NAME",  "text_last_name"):    "Last Name",
-        os.getenv("ELIG_COL_DOB",        "text_dob"):          "Patient Date of Birth",
-    }
+# =============================================================================
+# WEBHOOK TRIGGER — Monday fires this when "Run Stedi Eligibility" → "Run"
+# =============================================================================
 
-    row = {
-        "Name":     item.get("name", ""),
-        "Pulse ID": item_id,
-    }
-    for col_id, field_name in ONBOARDING_COLUMN_MAP.items():
-        row[field_name] = col_values.get(col_id, "")
+@router.post("/trigger")
+async def eligibility_trigger(request: Request) -> JSONResponse:
+    """
+    Monday webhook: fires when "Run Stedi Eligibility" column changes to "Run".
+
+    Responds to Monday immediately (within 5s), then runs pipeline.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    # Monday challenge handshake
+    if "challenge" in body:
+        return _ack(body["challenge"])
+
+    event = body.get("event", {})
+    item_id   = str(event.get("pulseId") or event.get("itemId") or "")
+    col_id    = str(event.get("columnId") or "")
+
+    # Extract the new label from the event value
+    event_value = event.get("value", {})
+    if isinstance(event_value, dict):
+        new_value = str(event_value.get("label", {}).get("text", "")).strip()
+    else:
+        new_value = ""
 
     logger.info(
-        f"[ELG] Row extracted: "
-        f"payer={row.get('Primary Insurance Final')} | "
-        f"member={row.get('Member ID')} | "
-        f"name={row.get('First Name')} {row.get('Last Name')}"
+        f"[ELG-WEBHOOK] Received | item={item_id} col={col_id} value={new_value!r}"
     )
 
-    return row
+    # Only process the correct trigger column
+    if col_id and col_id != INTAKE_COL_RUN_ELIG:
+        logger.debug(f"[ELG-WEBHOOK] Ignoring — column {col_id} is not the run trigger")
+        return _ack()
+
+    # Only process when value = "Run"
+    if new_value.lower() != RUN_TRIGGER_VALUE.lower():
+        logger.debug(f"[ELG-WEBHOOK] Ignoring — value {new_value!r} is not 'Run'")
+        return _ack()
+
+    if not item_id:
+        logger.warning("[ELG-WEBHOOK] No item_id in event — skipping")
+        return _ack()
+
+    # Run pipeline (ACK already sent above via return)
+    try:
+        monday_item = fetch_intake_item(item_id)
+        writeback   = run_and_write_eligibility(item_id, monday_item)
+        logger.info(
+            f"[ELG-WEBHOOK] ✓ Complete | item={item_id} "
+            f"part_b_active={writeback.get('Stedi Part B Active?')!r} "
+            f"coverage_type={writeback.get('Stedi Coverage Type')!r}"
+        )
+    except Exception as e:
+        logger.error(f"[ELG-WEBHOOK] ✗ Error | item={item_id}: {e}", exc_info=True)
+
+    return _ack()
 
 
+# =============================================================================
+# MANUAL RUN — same as webhook but triggered via API call
+# =============================================================================
+
+@router.post("/run/{item_id}")
+async def run_eligibility_and_write(item_id: str) -> JSONResponse:
+    """
+    Manually trigger a full eligibility check + write to Monday for a given item.
+    Same as the webhook trigger but invoked directly — useful for re-running
+    without changing the Monday column value.
+    """
+    try:
+        monday_item = fetch_intake_item(item_id)
+        writeback   = run_and_write_eligibility(item_id, monday_item)
+        return JSONResponse({
+            "status":  "success",
+            "item_id": item_id,
+            "results": writeback,
+        })
+    except Exception as e:
+        logger.error(f"[ELG-RUN] Error | item={item_id}: {e}", exc_info=True)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+# =============================================================================
+# TEST ENDPOINTS — no Monday writes
+# =============================================================================
+
+@router.post("/test/{item_id}")
+async def test_eligibility(item_id: str) -> JSONResponse:
+    """
+    Dry run: fetch item → run full eligibility pipeline → return writeback dict.
+    Does NOT write to Monday. Use for testing before the webhook is wired.
+    Returns all 23 V1 output fields.
+    """
+    try:
+        monday_item = fetch_intake_item(item_id)
+        row         = extract_eligibility_inputs(monday_item)
+        writeback   = run_eligibility_check(monday_item)
+        return JSONResponse({
+            "status":              "success",
+            "item_id":             item_id,
+            "input_row":           row,
+            "eligibility_results": writeback,
+        })
+    except Exception as e:
+        logger.error(f"[ELG-TEST] Error | item={item_id}: {e}", exc_info=True)
+        return JSONResponse({"status": "error", "item_id": item_id, "error": str(e)}, status_code=500)
+
+
+@router.post("/test/payload/{item_id}")
+async def test_eligibility_payload(item_id: str) -> JSONResponse:
+    """
+    Build + return the Stedi payload without sending it.
+    Use to verify payer mapping and subscriber fields before a live call.
+    """
+    try:
+        monday_item = fetch_intake_item(item_id)
+        row         = extract_eligibility_inputs(monday_item)
+        payload     = build_eligibility_payload(row)
+        # Strip internal meta before returning to caller
+        display = {k: v for k, v in payload.items() if k != "_meta"}
+        return JSONResponse({
+            "status":    "ok",
+            "item_id":   item_id,
+            "input_row": row,
+            "payload":   display,
+        })
+    except Exception as e:
+        logger.error(f"[ELG-PAYLOAD-TEST] Error | item={item_id}: {e}", exc_info=True)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+# =============================================================================
+# DEBUG
+# =============================================================================
+
+@router.get("/intake-board-columns")
+async def get_intake_board_columns() -> JSONResponse:
+    """
+    Return all column IDs and types from the Intake Board.
+    Use this to verify column IDs after any board changes.
+    """
+    if not INTAKE_BOARD_ID:
+        return JSONResponse(
+            {"error": "MONDAY_INTAKE_BOARD_ID env var not set"},
+            status_code=400,
+        )
+    query = """
+    query ($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        columns { id title type }
+      }
+    }
+    """
+    result  = run_query(query, {"boardId": INTAKE_BOARD_ID})
+    cols    = result.get("data", {}).get("boards", [{}])[0].get("columns", [])
+    return JSONResponse([{"id": c["id"], "title": c["title"], "type": c["type"]} for c in cols])

@@ -94,6 +94,7 @@ PAYER_ID_MAP = {
     "Horizon BCBS": "22099",
     "BCBS TN": "SB890",
     "BCBS FL": "BCBSF",
+    "Stedi": "STEDITEST",
 }
 
 CLAIM_FILING_CODE_MAP = {
@@ -345,8 +346,8 @@ PAYER_RATE_SCHEDULE = {
     ),
     "Fidelis Medicaid": dict(
         pump_rate=4000,
-        infusion_rate=None,
-        cartridge_rate=None,
+        infusion_rate=15.2,   # Medicaid rate — supply lines always split to Medicaid (MCDNY)
+        cartridge_rate=3.61,  # Medicaid rate — supply lines always split to Medicaid (MCDNY)
         monitor_rate=None,
         sensor_rate=None,
     ),
@@ -838,7 +839,14 @@ def resolve_line_item_charge_amount(
             #     return str(int(amount))
             return f"{amount:.2f}"
 
-    return safe_str(LEGACY_PROCEDURE_CODE_CHARGE_MAP.get(procedure_code, ""))
+    legacy_rate = LEGACY_PROCEDURE_CODE_CHARGE_MAP.get(procedure_code)
+    if legacy_rate is not None:
+        legacy_amount = float(legacy_rate)
+        if procedure_code in UNIT_BASED_PROCEDURE_CODES_FOR_RATE_PRICING and units > 0:
+            legacy_amount *= units
+        return f"{legacy_amount:.2f}"
+
+    return ""
 
 
 def sum_claim_charge_amount(service_lines: list[dict]) -> str:

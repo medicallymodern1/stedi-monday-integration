@@ -209,6 +209,41 @@ def monday_item_to_normalized_orders(monday_item: dict) -> list[dict]:
 
     return normalized_orders
 
+def inject_referring_provider(payload: dict, claim: dict) -> dict:
+    """
+    Add referringProvider (ordering doctor) to every service line.
+
+    Stedi requires the ordering doctor's NPI, first name, and last name
+    on each service line as referringProvider. Values come from the
+    normalized order (doctor_npi, doctor_first_name, doctor_last_name).
+    If NPI is missing the field is skipped — don't send a partial record.
+    """
+    doctor_npi   = claim.get("doctor_npi", "").strip()
+    doctor_first = claim.get("doctor_first_name", "").strip()
+    doctor_last  = claim.get("doctor_last_name", "").strip()
+
+    if not doctor_npi:
+        logger.warning("No doctor NPI found — referringProvider skipped for this claim")
+        return payload
+
+    referring = {"npi": doctor_npi}
+    if doctor_first:
+        referring["firstName"] = doctor_first
+    if doctor_last:
+        referring["lastName"] = doctor_last
+
+    claim_info = payload.get("claimInformation", {})
+    for line in claim_info.get("serviceLines", []):
+        line["referringProvider"] = referring
+
+    logger.info(
+        f"referringProvider injected | "
+        f"npi={doctor_npi} name={doctor_first} {doctor_last} | "
+        f"lines={len(claim_info.get('serviceLines', []))}"
+    )
+    return payload
+
+
 def build_claims_from_monday_item(monday_item: dict) -> list[dict]:
     """Main entry point. Monday item → Stedi claim JSON payloads."""
     item_id = monday_item.get("id")
@@ -238,6 +273,9 @@ def build_claims_from_monday_item(monday_item: dict) -> list[dict]:
 
             # Format all charge amounts to 2 decimal places
             payload = format_charge_amounts(payload)
+
+            # Inject ordering doctor as referringProvider on every service line
+            payload = inject_referring_provider(payload, claim)
 
             # Replace tradingPartnerName with official Stedi name
             # using the hardcoded mapping from claim_assumptions.py
@@ -274,6 +312,7 @@ def get_official_payer_name(payer_id: str) -> str:
         return ""
 
 
+
 def format_charge_amounts(payload: dict) -> dict:
     """Ensure all charge amounts are formatted with 2 decimal places."""
     claim_info = payload.get("claimInformation", {})
@@ -291,38 +330,4 @@ def format_charge_amounts(payload: dict) -> dict:
                 pass
     return payload
 
-# def build_claims_from_monday_item(monday_item: dict) -> list[dict]:
-#     """
-#     Main entry point.
-#     Monday item dict → Stedi claim JSON payloads.
-#     """
-#     item_id = monday_item.get("id")
-#     patient_name = monday_item.get("name")
-#
-#     logger.info(f"Building claims for: {patient_name} (id={item_id})")
-#
-#     # Step 1: Normalize
-#     normalized_orders = monday_item_to_normalized_orders(monday_item)
-#
-#     if not normalized_orders:
-#         logger.warning(f"No normalized orders for item {item_id}")
-#         return []
-#
-#     logger.info(f"Normalized {len(normalized_orders)} service lines")
-#
-#     # Step 2: Group into claims
-#     grouped_claims = group_normalized_orders_into_claims(normalized_orders)
-#     logger.info(f"Grouped into {len(grouped_claims)} claim(s)")
-#
-#     # Step 3: Build Stedi JSON
-#     stedi_payloads = []
-#     for claim in grouped_claims:
-#         try:
-#             payload = build_stedi_claim_json(claim)
-#             stedi_payloads.append(payload)
-#             logger.info(f"Built Stedi payload for: {claim.get('claim_key')}")
-#         except Exception as e:
-#             logger.error(f"Failed to build Stedi JSON: {e}", exc_info=True)
-#
-#     logger.info(f"Total Stedi payloads: {len(stedi_payloads)}")
-#     return stedi_payloads
+# inject_referring_provider defined above

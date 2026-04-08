@@ -1,4 +1,4 @@
-DRY_RUN = False
+DRY_RUN = True
 
 """
 services/claims_submission_service.py
@@ -109,6 +109,11 @@ def extract_parent_fields(item: dict) -> dict:
     def t(col_id):
         return _col_text(cvs, col_id) if col_id else ""
 
+    doctor_full = t(CLAIMS_PARENT_COL["doctor"])
+    doctor_parts = doctor_full.strip().split(None, 1)  # split on first whitespace
+    doctor_first = doctor_parts[0] if len(doctor_parts) >= 1 else ""
+    doctor_last  = doctor_parts[1] if len(doctor_parts) >= 2 else ""
+
     return {
         "name":           item.get("name", ""),
         "item_id":        item.get("id", ""),
@@ -117,7 +122,9 @@ def extract_parent_fields(item: dict) -> dict:
         "address":        t(CLAIMS_PARENT_COL["address"]),
         "member_id":      t(CLAIMS_PARENT_COL["member_id"]),
         "diagnosis":      t(CLAIMS_PARENT_COL["diagnosis"]),
-        "doctor":         t(CLAIMS_PARENT_COL["doctor"]),
+        "doctor":         doctor_full,
+        "doctor_first":   doctor_first,
+        "doctor_last":    doctor_last,
         "npi":            t(CLAIMS_PARENT_COL["npi"]),
         "primary_payor":  t(CLAIMS_PARENT_COL["primary_payor"]),
         "pr_payor_id":    t(CLAIMS_PARENT_COL["pr_payor_id"]),
@@ -251,6 +258,11 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
                 "compositeDiagnosisCodePointers": {
                     "diagnosisCodePointers": ["1"]
                 },
+            },
+            "referringProvider": {
+                "npi":       parent.get("npi", ""),
+                "firstName": parent.get("doctor_first", ""),
+                "lastName":  parent.get("doctor_last", ""),
             },
             "providerControlNumber": generate_provider_control_number(),
         }
