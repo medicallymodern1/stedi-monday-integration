@@ -80,7 +80,7 @@ PAYER_ID_MAP = {
     "Anthem BCBS Medicaid (JLJ)": "803",
     "Fidelis Commercial": "11315",
     "Fidelis Medicaid": "11315",
-    "Medicare A&B": "PLACEHOLDER_MEDICARE_A_B_PAYER_ID",
+    "Medicare A&B": "16013",
     "NYSHIP": "87726",
     "United Commercial": "87726",
     "United Medicare": "87726",
@@ -356,7 +356,7 @@ PAYER_RATE_SCHEDULE = {
         infusion_rate=29.07,
         cartridge_rate=3.62,
         monitor_rate=322.63,
-        sensor_rate=306.75,
+        sensor_rate=318.00,
     ),
     "Medicaid": dict(
         pump_rate=4440.0,
