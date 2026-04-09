@@ -189,8 +189,7 @@ STATUS_INDEX_MAP = {
 
     # Subscription Type (color_mky1qvcf)
     "color_mky1qvcf": {
-        "Insulin Pump + CGM": 0, "Insulin Pump": 1, "CGM": 2,
-        "Supplies Only": 3, "Insulin Pump & CGM": 6,
+        "Sensors": 0, "Supplies": 1, "Sensors & Supplies": 2,
     },
 
     # Primary Payor (color_mkxmhypt)
