@@ -513,6 +513,34 @@ def extract_order_cols(order_item: dict) -> dict:
     result["item_id"] = order_item.get("id", "")
     return result
 
+def combine_auth_ids(cols: dict) -> str:
+    """
+    Combine all non-empty auth IDs from the Order Board into one parent auth string.
+
+    Example:
+    abc123 / def456 / ghi789
+    """
+    auths = [
+        (cols.get("auth_monitor", "") or "").strip(),
+        (cols.get("auth_sensors", "") or "").strip(),
+        (cols.get("auth_pump", "") or "").strip(),
+        (cols.get("auth_infusion_set", "") or "").strip(),
+        (cols.get("auth_cartridge", "") or "").strip(),
+    ]
+
+    # Remove blanks while preserving order
+    auths = [a for a in auths if a]
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_auths = []
+    for a in auths:
+        if a not in seen:
+            seen.add(a)
+            unique_auths.append(a)
+
+    return " / ".join(unique_auths)
+
 
 # =============================================================================
 # SERVICE LINE RESOLVER — module-level so payer_name is always in scope
@@ -558,6 +586,7 @@ def _resolve_line(payer_name: str, cgm_coverage: str, cgm_type: str,
     except Exception as e:
         logger.warning(f"[CLAIMS] resolver failed for '{item_name}': {e}")
         return hcpc or "", [], str(qty), ""
+
 
 
 # =============================================================================
@@ -960,7 +989,7 @@ def _create_parent_item(claim: dict) -> str:
         (CLAIMS_PARENT_COL["doctor"],           "text",     claim.get("doctor_name")),
         (CLAIMS_PARENT_COL["npi"],              "text",     claim.get("doctor_npi")),
         (CLAIMS_PARENT_COL["secondary_id"],     "text",     claim.get("secondary_id")),
-        (CLAIMS_PARENT_COL["auth"],             "text",     claim.get("auth_id")),
+        (CLAIMS_PARENT_COL["auth"],             "text", combine_auth_ids(cols), False),
         (CLAIMS_PARENT_COL["pr_payor_id"],      "text",     claim.get("resolved_primary_payor_id")),
         # Phone
         (CLAIMS_PARENT_COL["patient_phone"],    "phone",    claim.get("patient_phone")),
