@@ -527,7 +527,35 @@ async def submit_from_claims_board(item_id: str) -> None:
     logger.info(f"[SUBMIT] Submitting to Stedi | payer={parent.get('primary_payor')} | pcn={pcn}")
 
     try:
+        # HARD STOP VALIDATION:
+        # Do not allow the claim to go out if any service line still has referringProvider
+        service_lines = payload.get("claimInformation", {}).get("serviceLines", [])
+
+        for i, line in enumerate(service_lines, start=1):
+            if "referringProvider" in line:
+                raise ValueError(
+                    f"Service line {i} still contains referringProvider. "
+                    "Blocking claim because this would map to DN instead of ordering provider."
+                )
+
+            if "orderingProvider" not in line:
+                raise ValueError(
+                    f"Service line {i} is missing orderingProvider. "
+                    "Blocking claim because the doctor must be sent as orderingProvider."
+                )
+
+        logger.info("[SUBMIT] FINAL PAYLOAD TO STEDI:")
+        logger.info(json.dumps(payload, indent=2))
+
         response = submit_claim(payload)
+
+    except ValueError as e:
+        error_msg = str(e)
+        logger.error(f"[SUBMIT] Final payload validation failed: {error_msg}")
+        _post_error_update(item_id, f"Submission blocked: {error_msg}")
+        _set_status_request_rejected(item_id)
+        return
+
     except Exception as e:
         # HTTP errors, network failures, Stedi rejections (400, 401, 500 etc.)
         error_msg = _extract_stedi_error(e)
@@ -535,7 +563,6 @@ async def submit_from_claims_board(item_id: str) -> None:
         _post_error_update(item_id, f"Stedi submission error: {error_msg}")
         _set_status_request_rejected(item_id)
         return
-
     claim_id = response.get("claim_id", "")
     logger.info(f"[SUBMIT] Submitted: claim_id={claim_id} | pcn={pcn}")
 
