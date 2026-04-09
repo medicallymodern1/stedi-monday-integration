@@ -266,9 +266,11 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
                 "firstName": parent.get("doctor_first", ""),
                 "lastName":  parent.get("doctor_last", ""),
             },
-            "priorAuthorizationNumber": sub.get("auth_id", ""),
             "providerControlNumber": generate_provider_control_number(),
         }
+        line_auth_id = (sub.get("auth_id", "") or "").strip()
+        if line_auth_id:
+            svc_line["additionalNotes"] = line_auth_id
         if modifiers:
             svc_line["professionalService"]["procedureModifiers"] = modifiers[:4]
 
