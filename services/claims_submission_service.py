@@ -259,7 +259,7 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
                     "diagnosisCodePointers": ["1"]
                 },
             },
-            "referringProvider": {
+            "orderingProvider": {
                 "npi":       parent.get("npi", ""),
                 "firstName": parent.get("doctor_first", ""),
                 "lastName":  parent.get("doctor_last", ""),
