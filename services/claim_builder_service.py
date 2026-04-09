@@ -209,35 +209,37 @@ def monday_item_to_normalized_orders(monday_item: dict) -> list[dict]:
 
     return normalized_orders
 
-def inject_referring_provider(payload: dict, claim: dict) -> dict:
+def inject_ordering_provider(payload: dict, claim: dict) -> dict:
     """
-    Add referringProvider (ordering doctor) to every service line.
+    Add orderingProvider to every service line.
 
-    Stedi requires the ordering doctor's NPI, first name, and last name
-    on each service line as referringProvider. Values come from the
-    normalized order (doctor_npi, doctor_first_name, doctor_last_name).
-    If NPI is missing the field is skipped — don't send a partial record.
+    For DME, Stedi/X12 837P guidance says to report the ordering provider
+    at the line level (Loop 2420E), not as a referring provider (DN).
     """
     doctor_npi   = claim.get("doctor_npi", "").strip()
     doctor_first = claim.get("doctor_first_name", "").strip()
     doctor_last  = claim.get("doctor_last_name", "").strip()
 
     if not doctor_npi:
-        logger.warning("No doctor NPI found — referringProvider skipped for this claim")
+        logger.warning("No doctor NPI found — orderingProvider skipped for this claim")
         return payload
 
-    referring = {"npi": doctor_npi}
+    ordering = {"npi": doctor_npi}
     if doctor_first:
-        referring["firstName"] = doctor_first
+        ordering["firstName"] = doctor_first
     if doctor_last:
-        referring["lastName"] = doctor_last
+        ordering["lastName"] = doctor_last
 
     claim_info = payload.get("claimInformation", {})
     for line in claim_info.get("serviceLines", []):
-        line["referringProvider"] = referring
+        line["orderingProvider"] = ordering
+
+        # Defensive cleanup in case referringProvider was already added earlier
+        if "referringProvider" in line:
+            del line["referringProvider"]
 
     logger.info(
-        f"referringProvider injected | "
+        f"orderingProvider injected | "
         f"npi={doctor_npi} name={doctor_first} {doctor_last} | "
         f"lines={len(claim_info.get('serviceLines', []))}"
     )
@@ -275,7 +277,7 @@ def build_claims_from_monday_item(monday_item: dict) -> list[dict]:
             payload = format_charge_amounts(payload)
 
             # Inject ordering doctor as referringProvider on every service line
-            payload = inject_referring_provider(payload, claim)
+            payload = inject_ordering_provider(payload, claim)
 
             # Replace tradingPartnerName with official Stedi name
             # using the hardcoded mapping from claim_assumptions.py
