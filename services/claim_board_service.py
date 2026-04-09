@@ -54,7 +54,11 @@ ORDER_COL = {
     "doctor_phone":        "phone_mm18t5ct",       # Doctor Phone  (phone)
 
     # Order details
-    "auth_id":             "text_mm1snsw3",         # Auth ID  (text)
+    "auth_monitor":        "text_mm1snsw3",         # Monitor Auth
+    "auth_sensors":        "text_mm28c4xs",         # Sensors Auth
+    "auth_pump":           "text_mm28nex8",         # Pump Auth
+    "auth_infusion_set":   "text_mm281vjp",         # Infusion Set Auth
+    "auth_cartridge":      "text_mm28kdfj",         # Cartridge Auth
     "order_type":          "color_mm1s96z2",       # Order Type  (status)
     "order_frequency":     "color_mm1s8tz0",       # Order Frequency  (status)
     "referral":            "color_mm1seak5",       # Referral  (status on Order Board)
@@ -599,6 +603,7 @@ def build_service_lines(cols: dict) -> list:
             "line_charge_amount":  charge,
             "line_est_pay":        charge,
             "service_date":        dos,
+            "auth_id":             cols.get("auth_pump", ""),
         })
         logger.info(f"[CLAIMS] Insulin Pump  hcpc={hcpc} order={pump_qty} claim={cqty} charge={charge} mods={mods}")
 
@@ -620,6 +625,7 @@ def build_service_lines(cols: dict) -> list:
             "line_charge_amount":  charge,
             "line_est_pay":        charge,
             "service_date":        dos,
+            "auth_id":             cols.get("auth_infusion_set", ""),
         })
         logger.info(f"[CLAIMS] Infusion Set  hcpc={hcpc} order={total_infusion}(inf1={infusion_1_qty}+inf2={infusion_2_qty}) claim={cqty} charge={charge} mods={mods}")
 
@@ -640,6 +646,7 @@ def build_service_lines(cols: dict) -> list:
             "line_charge_amount":  charge,
             "line_est_pay":        charge,
             "service_date":        dos,
+            "auth_id":             cols.get("auth_cartridge", ""),
         })
         logger.info(f"[CLAIMS] Cartridge  hcpc={hcpc} order={cartridge_qty} claim={cqty} charge={charge} mods={mods}")
 
@@ -661,6 +668,7 @@ def build_service_lines(cols: dict) -> list:
             "line_charge_amount":  charge,
             "line_est_pay":        charge,
             "service_date":        dos,
+            "auth_id":             cols.get("auth_sensors", ""),
         })
         logger.info(f"[CLAIMS] CGM Sensors  hcpc={hcpc} cgm_type={cgm_type} order={cgm_sensor_qty} claim={cqty} charge={charge} mods={mods}")
 
@@ -680,6 +688,7 @@ def build_service_lines(cols: dict) -> list:
             "line_charge_amount":  charge,
             "line_est_pay":        charge,
             "service_date":        dos,
+            "auth_id":             cols.get("auth_monitor", ""),
         })
         logger.info(f"[CLAIMS] CGM Monitor  hcpc={hcpc} order={cgm_monitor_qty} charge={charge} mods={mods}")
 
@@ -1022,13 +1031,13 @@ def _create_subitems(parent_item_id: str, claim: dict) -> None:
     """
 
     payer_name = claim.get("resolved_primary_payor", "")
-    auth_id    = claim.get("auth_id", "")
     frequency  = claim.get("order_frequency", "")
     sec_payer  = claim.get("secondary_payer", "")
     sec_id     = claim.get("secondary_id", "")
 
     for line in claim.get("service_lines", []):
         line_name = line.get("line_name", "Unknown")
+        line_auth_id = line.get("auth_id", "")
         try:
             result = run_query(create_mut, {
                 "parentId": str(parent_item_id),
@@ -1059,7 +1068,7 @@ def _create_subitems(parent_item_id: str, claim: dict) -> None:
                 (CLAIMS_SUBITEM_COL["order_frequency"],  "status",   frequency,                          True),
                 (CLAIMS_SUBITEM_COL["secondary_payer"],  "status",   sec_payer,                          True),
                 (CLAIMS_SUBITEM_COL["modifiers"],        "dropdown", mods_str,                           False),
-                (CLAIMS_SUBITEM_COL["auth_id"],          "text",     auth_id,                            False),
+                (CLAIMS_SUBITEM_COL["auth_id"],          "text",     line_auth_id,                       False),
                 (CLAIMS_SUBITEM_COL["secondary_id"],     "text",     sec_id,                             False),
                 (CLAIMS_SUBITEM_COL["order_quantity"],   "numbers",  line.get("line_order_quantity"),    False),
                 (CLAIMS_SUBITEM_COL["claim_quantity"],   "numbers",  line.get("line_claim_quantity"),    False),
