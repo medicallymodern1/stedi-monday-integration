@@ -55,6 +55,7 @@ CLAIMS_SUBITEM_COL = {
     "claim_quantity": "numeric_mm20r76b",   # plain Numbers column — written by Python at claim creation
     "charge_amount":  "numeric_mm1za8v5",   # plain Numbers column — used as lineItemChargeAmount in Stedi payload
     "est_pay":        "numeric_mm1zspsy",   # plain Numbers column — same value as charge_amount (contracted rate)
+    "auth_id":        "text_mm1z8nks",      # Prior authorization / auth ID per service line
 }
 
 
@@ -148,6 +149,7 @@ def extract_subitem_fields(subitem: dict) -> dict:
         "claim_quantity": t(CLAIMS_SUBITEM_COL["claim_quantity"]),
         "charge_amount":  t(CLAIMS_SUBITEM_COL["charge_amount"]),
         "est_pay":        t(CLAIMS_SUBITEM_COL["est_pay"]),
+        "auth_id":        t(CLAIMS_SUBITEM_COL["auth_id"]),
     }
 
 
@@ -264,6 +266,7 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
                 "firstName": parent.get("doctor_first", ""),
                 "lastName":  parent.get("doctor_last", ""),
             },
+            "priorAuthorizationNumber": sub.get("auth_id", ""),
             "providerControlNumber": generate_provider_control_number(),
         }
         if modifiers:
@@ -391,10 +394,10 @@ def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
 
     # Index values confirmed by client against live Claims Board status column
     STATUS_277_INDEX = {
-        "Payer Accepted": 0,
-        "Stedi Accepted": 1,
-        "Payer Rejected": 2,
-        "Stedi Rejected": 3,
+        "Stedi Accepted": 0,
+        "Stedi Rejected": 1,
+        "Payer Accepted": 2,
+        "Payer Rejected": 3,
     }
 
     # inline_277 values come from parse_inline_277_status() in stedi_service.py
