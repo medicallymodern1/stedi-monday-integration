@@ -22,40 +22,40 @@ CLAIMS_BOARD_ID = os.getenv("MONDAY_CLAIMS_BOARD_ID")
 
 # ── Claims Board column IDs (same as claim_board_service) ────────────────────
 CLAIMS_PARENT_COL = {
-    "name":           None,          # item.name
-    "dob":            "text_mkp3y5ax",
-    "gender":         "color_mm1zy5f2",
-    "patient_phone":  "phone_mm1znnww",
-    "address":        "location_mkxxpesw",
-    "member_id":      "text_mktat89m",
-    "diagnosis":      "color_mky2gpz5",
-    "doctor":         "text_mkxrh4a4",
-    "npi":            "text_mkxr2r9b",
+    "name": None,  # item.name
+    "dob": "text_mkp3y5ax",
+    "gender": "color_mm1zy5f2",
+    "patient_phone": "phone_mm1znnww",
+    "address": "location_mkxxpesw",
+    "member_id": "text_mktat89m",
+    "diagnosis": "color_mky2gpz5",
+    "doctor": "text_mkxrh4a4",
+    "npi": "text_mkxr2r9b",
     "doctor_address": "location_mkxr251b",
-    "dr_phone":       "phone_mm1zy789",
-    "secondary_payer":"color_mkxq1a2p",
-    "secondary_id":   "text_mkxwcqfy",
-    "primary_payor":  "color_mkxmhypt",
-    "pr_payor_id":    "text_mm1gcz3y",
-    "dos":            "date_mkwr7spz",
-    "auth":           "text_mkwrb2t9",
-    "claim_id":         "text_mm1zpzrs",
-    "claim_sent_date":  "date_mm14rk8d",
-    "pcn":              "text_mkwzbcme",   # Patient Control Number — used by 277 webhook to find this item
-    "status_277":       "color_mm1z1pb2",
-    "reason_277":       "text_mm1zsp2x",
+    "dr_phone": "phone_mm1zy789",
+    "secondary_payer": "color_mkxq1a2p",
+    "secondary_id": "text_mkxwcqfy",
+    "primary_payor": "color_mkxmhypt",
+    "pr_payor_id": "text_mm1gcz3y",
+    "dos": "date_mkwr7spz",
+    "auth": "text_mkwrb2t9",
+    "claim_id": "text_mm1zpzrs",
+    "claim_sent_date": "date_mm14rk8d",
+    "pcn": "text_mkwzbcme",   # Patient Control Number — used by 277 webhook to find this item
+    "status_277": "color_mm1z1pb2",
+    "reason_277": "text_mm1zsp2x",
     # Test field — read to determine usageIndicator (PRD 12.1)
     # Update column ID once confirmed on Claims Board
-    "is_test":        "color_mm1z59nj",    # Stedi Test (status) — confirmed from board export
+    "is_test": "color_mm1z59nj",  # Stedi Test (status) — confirmed from board export
 }
 
 CLAIMS_SUBITEM_COL = {
-    "hcpc_code":      "color_mm1cdvq8",
-    "modifiers":      "dropdown_mm1z7je9",
+    "hcpc_code": "color_mm1cdvq8",
+    "modifiers": "dropdown_mm1z7je9",
     "claim_quantity": "numeric_mm20r76b",   # plain Numbers column — written by Python at claim creation
-    "charge_amount":  "numeric_mm1za8v5",   # plain Numbers column — used as lineItemChargeAmount in Stedi payload
-    "est_pay":        "numeric_mm1zspsy",   # plain Numbers column — same value as charge_amount (contracted rate)
-    "auth_id":        "text_mm1z8nks",      # Prior authorization / auth ID per service line
+    "charge_amount": "numeric_mm1za8v5",    # plain Numbers column — used as lineItemChargeAmount in Stedi payload
+    "est_pay": "numeric_mm1zspsy",          # plain Numbers column — same value as charge_amount (contracted rate)
+    "auth_id": "text_mm1z8nks",             # Prior authorization / auth ID per service line
 }
 
 
@@ -113,26 +113,26 @@ def extract_parent_fields(item: dict) -> dict:
     doctor_full = t(CLAIMS_PARENT_COL["doctor"])
     doctor_parts = doctor_full.strip().split(None, 1)  # split on first whitespace
     doctor_first = doctor_parts[0] if len(doctor_parts) >= 1 else ""
-    doctor_last  = doctor_parts[1] if len(doctor_parts) >= 2 else ""
+    doctor_last = doctor_parts[1] if len(doctor_parts) >= 2 else ""
 
     return {
-        "name":           item.get("name", ""),
-        "item_id":        item.get("id", ""),
-        "dob":            t(CLAIMS_PARENT_COL["dob"]),
-        "gender":         t(CLAIMS_PARENT_COL["gender"]),
-        "address":        t(CLAIMS_PARENT_COL["address"]),
-        "member_id":      t(CLAIMS_PARENT_COL["member_id"]),
-        "diagnosis":      t(CLAIMS_PARENT_COL["diagnosis"]),
-        "doctor":         doctor_full,
-        "doctor_first":   doctor_first,
-        "doctor_last":    doctor_last,
-        "npi":            t(CLAIMS_PARENT_COL["npi"]),
-        "primary_payor":  t(CLAIMS_PARENT_COL["primary_payor"]),
-        "pr_payor_id":    t(CLAIMS_PARENT_COL["pr_payor_id"]),
-        "dos":            t(CLAIMS_PARENT_COL["dos"]),
-        "auth":           t(CLAIMS_PARENT_COL["auth"]),
+        "name": item.get("name", ""),
+        "item_id": item.get("id", ""),
+        "dob": t(CLAIMS_PARENT_COL["dob"]),
+        "gender": t(CLAIMS_PARENT_COL["gender"]),
+        "address": t(CLAIMS_PARENT_COL["address"]),
+        "member_id": t(CLAIMS_PARENT_COL["member_id"]),
+        "diagnosis": t(CLAIMS_PARENT_COL["diagnosis"]),
+        "doctor": doctor_full,
+        "doctor_first": doctor_first,
+        "doctor_last": doctor_last,
+        "npi": t(CLAIMS_PARENT_COL["npi"]),
+        "primary_payor": t(CLAIMS_PARENT_COL["primary_payor"]),
+        "pr_payor_id": t(CLAIMS_PARENT_COL["pr_payor_id"]),
+        "dos": t(CLAIMS_PARENT_COL["dos"]),
+        "auth": t(CLAIMS_PARENT_COL["auth"]),
         # PRD 12.1: read test field to determine usageIndicator
-        "is_test":        t(CLAIMS_PARENT_COL["is_test"]).strip().lower() == "test",
+        "is_test": t(CLAIMS_PARENT_COL["is_test"]).strip().lower() == "test",
     }
 
 
@@ -143,13 +143,13 @@ def extract_subitem_fields(subitem: dict) -> dict:
         return _col_text(cvs, col_id) if col_id else ""
 
     return {
-        "name":           subitem.get("name", ""),
-        "hcpc_code":      t(CLAIMS_SUBITEM_COL["hcpc_code"]),
-        "modifiers":      t(CLAIMS_SUBITEM_COL["modifiers"]),
+        "name": subitem.get("name", ""),
+        "hcpc_code": t(CLAIMS_SUBITEM_COL["hcpc_code"]),
+        "modifiers": t(CLAIMS_SUBITEM_COL["modifiers"]),
         "claim_quantity": t(CLAIMS_SUBITEM_COL["claim_quantity"]),
-        "charge_amount":  t(CLAIMS_SUBITEM_COL["charge_amount"]),
-        "est_pay":        t(CLAIMS_SUBITEM_COL["est_pay"]),
-        "auth_id":        t(CLAIMS_SUBITEM_COL["auth_id"]),
+        "charge_amount": t(CLAIMS_SUBITEM_COL["charge_amount"]),
+        "est_pay": t(CLAIMS_SUBITEM_COL["est_pay"]),
+        "auth_id": t(CLAIMS_SUBITEM_COL["auth_id"]),
     }
 
 
@@ -178,22 +178,22 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
     )
 
     payer_label = parent.get("primary_payor", "")
-    payer_id    = parent.get("pr_payor_id", "")
-    is_test     = parent.get("is_test", False)
+    payer_id = parent.get("pr_payor_id", "")
+    is_test = parent.get("is_test", False)
 
     # PRD 12.3: independently resolve usageIndicator and trading partner
     usage_indicator = "T" if is_test else "P"
 
     # PRD 12.2: Stedi fake payer routing
     if payer_label == "Stedi":
-        trading_partner_id   = "STEDITEST"
+        trading_partner_id = "STEDITEST"
         trading_partner_name = "Stedi Test Payer"
-        receiver_name        = "Stedi"
+        receiver_name = "Stedi"
     else:
-        trading_partner_id   = payer_id or payer_label
+        trading_partner_id = payer_id or payer_label
         from claim_assumptions import STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID
         trading_partner_name = STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID.get(payer_id, "") or payer_label
-        receiver_name        = trading_partner_name
+        receiver_name = trading_partner_name
 
     claim_filing_code = resolve_claim_filing_code(payer_label)
 
@@ -222,7 +222,7 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
                 )
         except ValueError as ve:
             if "DOS date" in str(ve):
-                raise   # re-raise our own error
+                raise
             # date parse failed — let Stedi catch it
 
     # Diagnosis — strip dots for Stedi
@@ -238,10 +238,10 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
             logger.warning(f"[SUBMIT] Subitem '{sub.get('name')}' missing HCPC code — skipped")
             continue
 
-        modifiers_raw  = sub.get("modifiers", "") or ""
-        modifiers      = [m.strip() for m in modifiers_raw.split(",") if m.strip()]
-        claim_qty      = sub.get("claim_quantity", "1") or "1"
-        charge_raw     = sub.get("charge_amount", "0") or "0"
+        modifiers_raw = sub.get("modifiers", "") or ""
+        modifiers = [m.strip() for m in modifiers_raw.split(",") if m.strip()]
+        claim_qty = sub.get("claim_quantity", "1") or "1"
+        charge_raw = sub.get("charge_amount", "0") or "0"
 
         try:
             charge = float(charge_raw)
@@ -252,35 +252,42 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
         svc_line = {
             "serviceDate": dos_stedi,
             "professionalService": {
-                "procedureIdentifier":  "HC",
-                "procedureCode":        hcpc_code,
+                "procedureIdentifier": "HC",
+                "procedureCode": hcpc_code,
                 "lineItemChargeAmount": f"{charge:.2f}",
-                "measurementUnit":      "UN",
-                "serviceUnitCount":     str(int(float(claim_qty))) if claim_qty else "1",
+                "measurementUnit": "UN",
+                "serviceUnitCount": str(int(float(claim_qty))) if claim_qty else "1",
                 "compositeDiagnosisCodePointers": {
                     "diagnosisCodePointers": ["1"]
                 },
             },
             "orderingProvider": {
-                "npi":       parent.get("npi", ""),
+                "npi": parent.get("npi", ""),
                 "firstName": parent.get("doctor_first", ""),
-                "lastName":  parent.get("doctor_last", ""),
+                "lastName": parent.get("doctor_last", ""),
             },
             "providerControlNumber": generate_provider_control_number(),
         }
+
         line_auth_id = (sub.get("auth_id", "") or "").strip()
         if line_auth_id:
             svc_line["additionalNotes"] = line_auth_id
+
         if modifiers:
             svc_line["professionalService"]["procedureModifiers"] = modifiers[:4]
 
         service_lines.append(svc_line)
+
         est_pay_raw = sub.get("est_pay", "") or ""
         try:
             est_pay_log = f"${float(est_pay_raw):.2f}" if est_pay_raw else "not set"
         except ValueError:
             est_pay_log = "not set"
-        logger.info(f"[SUBMIT] Service line: {hcpc_code} qty={claim_qty} charge={charge:.2f} est_pay={est_pay_log} mods={modifiers}")
+
+        logger.info(
+            f"[SUBMIT] Service line: {hcpc_code} qty={claim_qty} charge={charge:.2f} "
+            f"est_pay={est_pay_log} mods={modifiers}"
+        )
 
     if not service_lines:
         raise ValueError("No valid HCPC-coded service lines found on Claims Board subitems")
@@ -288,65 +295,65 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
     pcn = generate_patient_control_number()
 
     payload = {
-        "tradingPartnerName":      trading_partner_name,
+        "tradingPartnerName": trading_partner_name,
         "tradingPartnerServiceId": trading_partner_id,
-        "usageIndicator":          usage_indicator,
+        "usageIndicator": usage_indicator,
         "receiver": {
             "organizationName": receiver_name,
         },
         "submitter": {
-            "organizationName":        SUBMITTER_ORGANIZATION_NAME,
+            "organizationName": SUBMITTER_ORGANIZATION_NAME,
             "submitterIdentification": SUBMITTER_IDENTIFICATION,
             "contactInformation": {
-                "name":        SUBMITTER_CONTACT_NAME,
+                "name": SUBMITTER_CONTACT_NAME,
                 "phoneNumber": SUBMITTER_PHONE_NUMBER,
             },
         },
         "billing": {
-            "providerType":     "BillingProvider",
-            "npi":              BILLING_PROVIDER_NPI,
-            "employerId":       BILLING_PROVIDER_EIN,
-            "taxonomyCode":     BILLING_PROVIDER_TAXONOMY_CODE,
+            "providerType": "BillingProvider",
+            "npi": BILLING_PROVIDER_NPI,
+            "employerId": BILLING_PROVIDER_EIN,
+            "taxonomyCode": BILLING_PROVIDER_TAXONOMY_CODE,
             "organizationName": BILLING_PROVIDER_ORGANIZATION_NAME,
             "address": {
-                "address1":   BILLING_PROVIDER_ADDRESS_1,
-                "city":       BILLING_PROVIDER_CITY,
-                "state":      BILLING_PROVIDER_STATE,
+                "address1": BILLING_PROVIDER_ADDRESS_1,
+                "city": BILLING_PROVIDER_CITY,
+                "state": BILLING_PROVIDER_STATE,
                 "postalCode": BILLING_PROVIDER_POSTAL_CODE,
             },
             "contactInformation": {
-                "name":        BILLING_PROVIDER_CONTACT_NAME,
+                "name": BILLING_PROVIDER_CONTACT_NAME,
                 "phoneNumber": BILLING_PROVIDER_CONTACT_PHONE_NUMBER,
             },
         },
         "subscriber": {
-            "memberId":                       parent.get("member_id", ""),
+            "memberId": parent.get("member_id", ""),
             "paymentResponsibilityLevelCode": "P",
-            "firstName":                      first,
-            "lastName":                       last,
-            "gender":                         normalize_gender(parent.get("gender", "")),
-            "dateOfBirth":                    normalize_date(parent.get("dob", "")),
+            "firstName": first,
+            "lastName": last,
+            "gender": normalize_gender(parent.get("gender", "")),
+            "dateOfBirth": normalize_date(parent.get("dob", "")),
             "address": {
-                "address1":   patient_addr.get("address1", ""),
-                "city":       patient_addr.get("city", ""),
-                "state":      patient_addr.get("state", ""),
+                "address1": patient_addr.get("address1", ""),
+                "city": patient_addr.get("city", ""),
+                "state": patient_addr.get("state", ""),
                 "postalCode": patient_addr.get("postal_code", ""),
             },
         },
         "claimInformation": {
-            "claimFilingCode":                          claim_filing_code,
-            "patientControlNumber":                     pcn,
-            "claimChargeAmount":                        f"{total_charge:.2f}",
-            "placeOfServiceCode":                       "12",
-            "claimFrequencyCode":                       "1",
-            "signatureIndicator":                       "Y",
-            "planParticipationCode":                    "A",
+            "claimFilingCode": claim_filing_code,
+            "patientControlNumber": pcn,
+            "claimChargeAmount": f"{total_charge:.2f}",
+            "placeOfServiceCode": "12",
+            "claimFrequencyCode": "1",
+            "signatureIndicator": "Y",
+            "planParticipationCode": "A",
             "benefitsAssignmentCertificationIndicator": "Y",
-            "releaseInformationCode":                   "Y",
+            "releaseInformationCode": "Y",
             "healthCareCodeInformation": [
                 {
                     "diagnosisTypeCode": "ABK",
-                    "diagnosisCode":     diagnosis,
+                    "diagnosisCode": diagnosis,
                 }
             ],
             "serviceLines": service_lines,
@@ -364,67 +371,65 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
 # ── Write back after submission ───────────────────────────────────────────────
 
 def _write_column_safe(item_id, col_id, value, label):
-    if not col_id or not value:
+    if not col_id or value is None:
         return
+
     mutation = """
     mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
       change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) { id }
     }
     """
     try:
-        run_query(mutation, {"itemId": str(item_id), "boardId": str(CLAIMS_BOARD_ID),
-                             "columnId": col_id, "value": value})
+        run_query(
+            mutation,
+            {
+                "itemId": str(item_id),
+                "boardId": str(CLAIMS_BOARD_ID),
+                "columnId": col_id,
+                "value": value,
+            },
+        )
         logger.info(f"[SUBMIT] Wrote {label} to item {item_id}")
     except Exception as e:
         logger.warning(f"[SUBMIT] Failed to write {label}: {e}")
 
 
-def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
-                               inline_277: str = "Pending") -> None:
-    """PRD 13/FR11: Write Claim ID, PCN, Claim Sent Date, 277 Status. Never touch Primary Status."""
+def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "") -> None:
+    """
+    Write submission outputs only:
+    - Claim ID
+    - PCN
+    - Claim Sent Date
+
+    IMPORTANT:
+    Do NOT write 277 Status or 277 Rejected Reason here.
+    Those fields must remain blank until the real 277 workflow updates them.
+    """
     from datetime import date as _date
+
     today = _date.today().isoformat()
 
-    _write_column_safe(item_id, CLAIMS_PARENT_COL.get("claim_id"),
-                       json.dumps(claim_id), f"Claim ID={claim_id}")
-    # Write PCN so the 277 webhook can find this Claims Board item later by PCN
+    _write_column_safe(
+        item_id,
+        CLAIMS_PARENT_COL.get("claim_id"),
+        json.dumps(claim_id),
+        f"Claim ID={claim_id}",
+    )
+
     if pcn:
-        _write_column_safe(item_id, CLAIMS_PARENT_COL.get("pcn"),
-                           json.dumps(pcn), f"PCN={pcn}")
-    _write_column_safe(item_id, CLAIMS_PARENT_COL.get("claim_sent_date"),
-                       json.dumps({"date": today}), f"Claim Sent Date={today}")
+        _write_column_safe(
+            item_id,
+            CLAIMS_PARENT_COL.get("pcn"),
+            json.dumps(pcn),
+            f"PCN={pcn}",
+        )
 
-    # Index values confirmed by client against live Claims Board status column
-    STATUS_277_INDEX = {
-        "Payer Accepted": 0,
-        "Stedi Accepted": 1,
-        "Payer Rejected": 2,
-        "Stedi Rejected": 3,
-    }
-
-    # inline_277 values come from parse_inline_277_status() in stedi_service.py
-    # which now returns the full label ("Stedi Accepted", "Payer Accepted", etc.)
-    # directly. Map any legacy plain "Accepted"/"Rejected" values for safety.
-    INLINE_277_TO_LABEL = {
-        "Stedi Accepted": "Stedi Accepted",
-        "Payer Accepted": "Payer Accepted",
-        "Stedi Rejected": "Stedi Rejected",
-        "Payer Rejected": "Payer Rejected",
-        # Legacy plain values from old parse_inline_277_status — keep as fallback
-        "Accepted":       "Stedi Accepted",  # inline 277 at submission = clearinghouse level
-        "Rejected":       "Stedi Rejected",
-        "Pending":        None,              # don't write anything for Pending
-    }
-
-    status_277 = INLINE_277_TO_LABEL.get(inline_277)
-    if status_277 is not None:
-        idx = STATUS_277_INDEX.get(status_277)
-        if idx is not None:
-            _write_column_safe(item_id, CLAIMS_PARENT_COL.get("status_277"),
-                               json.dumps({"index": idx}), f"277 Status={status_277}")
-    reason = "" if (status_277 and "Accepted" in status_277) else ""
-    _write_column_safe(item_id, CLAIMS_PARENT_COL.get("reason_277"),
-                       json.dumps(reason), "277 Rejected Reason")
+    _write_column_safe(
+        item_id,
+        CLAIMS_PARENT_COL.get("claim_sent_date"),
+        json.dumps({"date": today}),
+        f"Claim Sent Date={today}",
+    )
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -435,7 +440,7 @@ def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
 
 # Claims Board primary status column
 _PRIMARY_STATUS_COL = "color_mkxmywtb"   # Primary Status (submission status)
-_STATUS_REQUEST_REJECTED_INDEX = 9        # "Request Rejected" label index
+_STATUS_REQUEST_REJECTED_INDEX = 9       # "Request Rejected" label index
 
 
 def _post_error_update(item_id: str, message: str) -> None:
@@ -467,12 +472,15 @@ def _set_status_request_rejected(item_id: str) -> None:
     }
     """
     try:
-        run_query(mutation, {
-            "itemId":   str(item_id),
-            "boardId":  str(CLAIMS_BOARD_ID),
-            "columnId": _PRIMARY_STATUS_COL,
-            "value":    json.dumps({"index": _STATUS_REQUEST_REJECTED_INDEX}),
-        })
+        run_query(
+            mutation,
+            {
+                "itemId": str(item_id),
+                "boardId": str(CLAIMS_BOARD_ID),
+                "columnId": _PRIMARY_STATUS_COL,
+                "value": json.dumps({"index": _STATUS_REQUEST_REJECTED_INDEX}),
+            },
+        )
         logger.info(f"[SUBMIT] Set item {item_id} → Request Rejected (index=9)")
     except Exception as e:
         logger.warning(f"[SUBMIT] Failed to set Request Rejected status: {e}")
@@ -506,7 +514,7 @@ async def submit_from_claims_board(item_id: str) -> None:
     logger.info(f"[SUBMIT] Fetching Claims Board item {item_id}")
     claims_item = get_claims_item_with_subitems(item_id)
 
-    parent   = extract_parent_fields(claims_item)
+    parent = extract_parent_fields(claims_item)
     subitems = [extract_subitem_fields(s) for s in claims_item.get("subitems", [])]
 
     if not subitems:
@@ -568,10 +576,11 @@ async def submit_from_claims_board(item_id: str) -> None:
         _post_error_update(item_id, f"Stedi submission error: {error_msg}")
         _set_status_request_rejected(item_id)
         return
+
     claim_id = response.get("claim_id", "")
     logger.info(f"[SUBMIT] Submitted: claim_id={claim_id} | pcn={pcn}")
 
-    inline_277 = response.get("inline_277_status", "Pending")
-    # inline_277 is a best-effort early status — the 277 webhook will overwrite
-    # it with the correct value once it arrives and finds this item via PCN.
-    _write_submission_outputs(item_id, claim_id, pcn=pcn, inline_277=inline_277)
+    # IMPORTANT:
+    # Do NOT write any 277 status here.
+    # Leave the 277 fields blank until the real 277 workflow updates them.
+    _write_submission_outputs(item_id, claim_id, pcn=pcn)
