@@ -396,10 +396,10 @@ def _write_submission_outputs(item_id: str, claim_id: str, pcn: str = "",
 
     # Index values confirmed by client against live Claims Board status column
     STATUS_277_INDEX = {
-        "Stedi Accepted": 0,
-        "Stedi Rejected": 1,
-        "Payer Accepted": 2,
-        "Payer Rejected": 3,
+        "Payer Accepted": 0,
+        "Stedi Accepted": 1,
+        "Payer Rejected": 2,
+        "Stedi Rejected": 3,
     }
 
     # inline_277 values come from parse_inline_277_status() in stedi_service.py
