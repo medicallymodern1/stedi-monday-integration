@@ -461,10 +461,10 @@ def update_277_on_claims_board(item_id: str, status: str, rejection_reason: str 
     REASON_277_COL = "text_mm1zsp2x"    # 277 Rejected Reason  (text)
 
     STATUS_INDEX = {
-        "Stedi Accepted": 0,
-        "Stedi Rejected": 1,
-        "Payer Accepted": 2,
-        "Payer Rejected": 3,
+        "Payer Accepted": 0,
+        "Stedi Accepted": 1,
+        "Payer Rejected": 2,
+        "Stedi Rejected": 3,
     }
 
     import json as _json
