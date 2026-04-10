@@ -216,8 +216,8 @@ STATUS_INDEX_MAP = {
 
     # 277 Status (color_mm1z1pb2)
     "color_mm1z1pb2": {
-        "Stedi Accepted": 0, "Stedi Rejected": 1,
-        "Payer Accepted": 2, "Payer Rejected": 3,
+        "Payer Accepted": 0, "Stedi Accepted": 1,
+        "Payer Rejected": 2, "Stedi Rejected": 3,
     },
 }
 
