@@ -175,27 +175,36 @@ def _map_277_status(raw_status: str, report: dict) -> str:
     Map raw 277 status to Monday 277 Status label.
     PRD 14 values: Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
 
-    Logic:
-    - Check providerClaimStatuses (clearinghouse/Stedi level) for category code.
-    - Also check ALL informationStatuses across every claim for any A0 code,
-      which signals clearinghouse-level acceptance regardless of claim outcome.
-    - A0 at any level = Stedi decision. A1/A2/A3/other = Payer decision.
-    - If providerStatuses is missing or empty, fall back to checking whether
-      the x12 envelope-level code indicates clearinghouse processing.
-
-    Why this matters:
-    - Stedi test payer returns A1 at claim level (informationStatuses) but
-      may not populate providerStatuses at all.
-    - Without this fallback, a missing providerStatuses causes the code to
-      always return "Payer Accepted/Rejected" instead of "Stedi Accepted/Rejected".
+    IMPORTANT:
+    Determine Stedi vs payer from source metadata first.
+    If the 277 source is clearly STEDI INC / Clearinghouse, classify it as
+    Stedi-level even if the status category code is A1.
     """
-    # ── Step 1: Check providerClaimStatuses (clearinghouse level) ────────────
+
+    payer = {}
+    try:
+        payer = (
+            report.get("transactions", [{}])[0]
+            .get("payers", [{}])[0]
+        )
+    except Exception:
+        payer = {}
+
+    # ── Step 1: Source metadata takes priority ────────────────────────────────
+    source_name = (payer.get("organizationName") or "").strip().upper()
+    source_type = (payer.get("entityIdentifierCodeValue") or "").strip().upper()
+
+    is_stedi_level = (
+        source_name == "STEDI INC"
+        or source_type == "CLEARINGHOUSE"
+    )
+
+    # ── Step 2: Fallback to old A0 heuristic only if source metadata
+    #           did not already prove this is Stedi-level ──────────────────────
     provider_cat = ""
     try:
         provider_cat = (
-            report.get("transactions", [{}])[0]
-            .get("payers", [{}])[0]
-            .get("claimStatusTransactions", [{}])[0]
+            payer.get("claimStatusTransactions", [{}])[0]
             .get("providerClaimStatuses", [{}])[0]
             .get("providerStatuses", [{}])[0]
             .get("healthCareClaimStatusCategoryCode", "")
@@ -203,15 +212,9 @@ def _map_277_status(raw_status: str, report: dict) -> str:
     except Exception:
         provider_cat = ""
 
-    # ── Step 2: Scan ALL informationStatuses for any A0 code ─────────────────
-    # A0 = Acknowledged/Accepted at clearinghouse (Stedi) level
     has_any_a0 = False
     try:
-        claim_status_txns = (
-            report.get("transactions", [{}])[0]
-            .get("payers", [{}])[0]
-            .get("claimStatusTransactions", [{}])
-        )
+        claim_status_txns = payer.get("claimStatusTransactions", [{}])
         for cst in claim_status_txns:
             for csd in cst.get("claimStatusDetails", []):
                 for pcsd in csd.get("patientClaimStatusDetails", []):
@@ -220,14 +223,26 @@ def _map_277_status(raw_status: str, report: dict) -> str:
                             for info in ics.get("informationStatuses", []):
                                 if info.get("healthCareClaimStatusCategoryCode", "") == "A0":
                                     has_any_a0 = True
+                                    break
+                            if has_any_a0:
+                                break
+                        if has_any_a0:
+                            break
+                    if has_any_a0:
+                        break
+                if has_any_a0:
+                    break
+            if has_any_a0:
+                break
     except Exception:
         pass
 
-    # ── Step 3: Determine if this is a Stedi-level or Payer-level decision ───
-    is_stedi_level = (provider_cat == "A0") or has_any_a0
+    if not is_stedi_level:
+        is_stedi_level = (provider_cat == "A0") or has_any_a0
 
     logger.info(
         f"[277] _map_277_status: raw_status={raw_status!r} "
+        f"source_name={source_name!r} source_type={source_type!r} "
         f"provider_cat={provider_cat!r} has_any_a0={has_any_a0} "
         f"is_stedi_level={is_stedi_level}"
     )
@@ -237,7 +252,7 @@ def _map_277_status(raw_status: str, report: dict) -> str:
     elif raw_status == "Rejected":
         return "Stedi Rejected" if is_stedi_level else "Payer Rejected"
 
-    return "Payer Accepted"  # fallback for Pending/Unknown
+    return "Stedi Accepted" if is_stedi_level else "Payer Accepted"
 
 
 def parse_277_status(report: dict) -> tuple:
