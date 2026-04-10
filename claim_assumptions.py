@@ -283,6 +283,7 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID = {
 
 FIXED_SERVICE_UNIT_COUNT_BY_PROCEDURE_AND_PAYER = {
     "A4224": {
+        "Cigna": "13",
         "__default__": "14",
     },
     "A4225": {
@@ -701,22 +702,16 @@ def resolve_cgm_service_unit_count(variant: str, quantity: Any,
 
 
 def resolve_supply_service_unit_count(procedure_code: str, payer_name: str, quantity: Any) -> str:
-    """
-    Resolve service unit count for infusion sets / cartridges.
-    """
     procedure_code = safe_str(procedure_code)
     qty = parse_int(quantity)
-
     if procedure_code in QUANTITY_BASED_PROCEDURE_CODES:
         return str(qty * 10) if qty > 0 else ""
-
     if procedure_code == "A4224":
-        return FIXED_SERVICE_UNIT_COUNT_BY_PROCEDURE_AND_PAYER["A4224"]["__default__"]
-
+        payer_rules = FIXED_SERVICE_UNIT_COUNT_BY_PROCEDURE_AND_PAYER["A4224"]
+        return safe_str(payer_rules.get(payer_name, payer_rules["__default__"]))
     if procedure_code == "A4225":
         payer_rules = FIXED_SERVICE_UNIT_COUNT_BY_PROCEDURE_AND_PAYER["A4225"]
         return safe_str(payer_rules.get(payer_name, DEFAULT_A4225_SERVICE_UNIT_COUNT))
-
     return ""
 
 
