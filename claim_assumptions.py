@@ -91,7 +91,7 @@ PAYER_ID_MAP = {
     "Cigna": "62308",
     "Medicaid": "MCDNY",
     "Midlands Choice": "47080",
-    "Horizon BCBS": "22099",
+    "Horizon BCBS": "11348",
     "BCBS TN": "SB890",
     "BCBS FL": "BCBSF",
     "Stedi": "STEDITEST",
@@ -275,7 +275,7 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID = {
     "62308": "Cigna",
     "MCDNY": "Medicaid New York",
     "47080": "Midlands Choice",
-    "22099": "Horizon Blue Cross and Blue Shield of New Jersey",
+    "11348": "Horizon Blue Cross and Blue Shield of New Jersey",
     "SB890": "BlueCross BlueShield of Tennessee",
     "BCBSF": "Florida Blue",
     "STEDITEST": "Stedi Test Payer",
@@ -752,8 +752,28 @@ def resolve_procedure_modifiers(
     """
     Resolve procedure modifiers based on procedure code, payer, and CGM coverage.
     """
+    payer_name = safe_str(payer_name)
     procedure_code = safe_str(procedure_code)
     cgm_coverage = normalize_spaces(cgm_coverage)
+
+    # ------------------------------------------------------------
+    # HORIZON BCBS SPECIAL RULES
+    # ------------------------------------------------------------
+    if payer_name == "Horizon BCBS":
+        if procedure_code == "A4239":
+            return ["NU"]
+
+        if procedure_code == "E0784":
+            return ["NU"]
+
+        if procedure_code == "A4230":
+            return ["NU", "SC"]
+
+        if procedure_code == "A4232":
+            return ["NU", "SC"]
+
+        if procedure_code == "E2103":
+            return ["NU"]
 
     if procedure_code == "E0784":
         return E0784_MODIFIERS.copy()
