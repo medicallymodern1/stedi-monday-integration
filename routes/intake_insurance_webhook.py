@@ -285,14 +285,22 @@ async def intake_insurance_manual_run(item_id: str):
     output, log_lines = resolve_intake_fields(fields)
 
     if output:
-        _write_columns(board_id, item_id, output)
+        # Filter out column IDs that don't exist on the board
+        board_col_ids = set(fields.keys()) - {"_name"}
+        filtered = {k: v for k, v in output.items() if k in board_col_ids}
+        skipped = [k for k in output if k not in board_col_ids]
+        _write_columns(board_id, item_id, filtered)
+    else:
+        filtered = {}
+        skipped = []
 
     return {
         "status": "success",
         "item_id": item_id,
         "item_name": fields.get("_name", ""),
         "primary_insurance": fields.get(COL_PRIMARY_INSURANCE, ""),
-        "columns_written": len(output),
+        "columns_written": len(filtered),
+        "columns_skipped": skipped,
         "log": log_lines,
         "output": output,
     }

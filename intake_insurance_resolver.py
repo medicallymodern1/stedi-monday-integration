@@ -70,7 +70,7 @@ COL_SUPPLIES_INS_ACTIVE         = "color_mm2bvmw7"
 
 # ── Monitor ──────────────────────────────────────────────────────────────────
 COL_MONITOR_AUTH_REQ            = "color_mm2bpw7z"
-COL_MONITOR_NETWORK_STATUS      = "color_mm2b7c1z"
+COL_MONITOR_NETWORK_STATUS      = "color_mm2bekxa"
 COL_MONITOR_COINSURANCE         = "numeric_mm2bffek"
 COL_MONITOR_HCPC                = "color_mm2b1zgq"
 
