@@ -69,9 +69,9 @@ def _get_item_fields(item_id):
 
 
 def _write_columns(board_id, item_id, column_values):
-    """Write multiple column values to a board item."""
+    """Write multiple column values to a board item. Returns True on success."""
     if not column_values:
-        return
+        return True
 
     # Build the column_values dict for the mutation.
     # Status columns (color_*) need {"label": "value"} format.
@@ -112,8 +112,27 @@ def _write_columns(board_id, item_id, column_values):
             "columnValues": col_json,
         })
         logger.info("[INTAKE-INS] Wrote %d columns to item %s", len(column_values), item_id)
+        return True
     except Exception:
-        logger.exception("[INTAKE-INS] Failed to write columns to item %s", item_id)
+        logger.exception("[INTAKE-INS] Failed to write %d columns to item %s. Payload: %s",
+                         len(formatted), item_id, col_json[:2000])
+        # Diagnostic: try writing each column individually to find the bad one(s)
+        logger.info("[INTAKE-INS] Retrying columns one-by-one to identify bad label(s)...")
+        ok_count = 0
+        for col_id, col_val in formatted.items():
+            single_json = json.dumps({col_id: col_val})
+            try:
+                run_query(mutation, {
+                    "boardId": str(board_id),
+                    "itemId": str(item_id),
+                    "columnValues": single_json,
+                })
+                ok_count += 1
+            except Exception as e:
+                logger.error("[INTAKE-INS] BAD COLUMN: %s = %s  error=%s", col_id, col_val, e)
+        logger.info("[INTAKE-INS] One-by-one retry: %d/%d columns written successfully",
+                     ok_count, len(formatted))
+        return ok_count > 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,12 +185,31 @@ def _process_intake_insurance(item_id, board_id, column_id=""):
             logger.info("[INTAKE-INS] No output produced for item %s", item_id)
             return
 
+        # Filter out column IDs that don't exist on the board.
+        # The fields dict keys (from the item query) are the valid board columns.
+        board_col_ids = set(fields.keys()) - {"_name"}
+        filtered_output = {}
+        skipped = []
+        for col_id, val in output.items():
+            if col_id in board_col_ids:
+                filtered_output[col_id] = val
+            else:
+                skipped.append(col_id)
+
+        if skipped:
+            logger.warning("[INTAKE-INS] Skipping %d columns not on board: %s",
+                           len(skipped), skipped)
+
         # Write back to Monday
-        _write_columns(board_id, item_id, output)
+        write_ok = _write_columns(board_id, item_id, filtered_output)
 
         elapsed = time.time() - start
-        logger.info("[INTAKE-INS] Item %s resolved in %.2fs — %d columns written",
-                     item_id, elapsed, len(output))
+        if write_ok:
+            logger.info("[INTAKE-INS] Item %s resolved in %.2fs — %d columns written (%d skipped)",
+                         item_id, elapsed, len(filtered_output), len(skipped))
+        else:
+            logger.warning("[INTAKE-INS] Item %s resolved in %.2fs — write FAILED for %d columns",
+                           item_id, elapsed, len(filtered_output))
 
     except Exception:
         logger.exception("[INTAKE-INS] Error processing item %s", item_id)
@@ -284,6 +322,12 @@ async def intake_insurance_dry_run(item_id: str):
 
     output, log_lines = resolve_intake_fields(fields)
 
+    # Validate: which output column IDs actually exist on the board?
+    board_col_ids = set(fields.keys()) - {"_name"}
+    output_col_ids = set(output.keys()) if output else set()
+    missing_cols = sorted(output_col_ids - board_col_ids)
+    valid_cols = sorted(output_col_ids & board_col_ids)
+
     return {
         "status": "dry_run",
         "item_id": item_id,
@@ -291,6 +335,8 @@ async def intake_insurance_dry_run(item_id: str):
         "primary_insurance": fields.get(COL_PRIMARY_INSURANCE, ""),
         "classified_by_llm": classified_as,
         "columns_would_write": len(output),
+        "columns_valid_on_board": len(valid_cols),
+        "columns_missing_from_board": missing_cols,
         "log": log_lines,
         "output": output,
         "note": "DRY RUN — nothing was written to Monday.",
