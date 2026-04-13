@@ -139,7 +139,10 @@ _SERVING_MAP = {
 
 def _is_serving(serving_value, group):
     m = _SERVING_MAP.get(serving_value)
-    return m.get(group, True) if m else True
+    if m is None:
+        # Unknown or blank Supplies Split → not serving anything
+        return False
+    return m.get(group, False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
