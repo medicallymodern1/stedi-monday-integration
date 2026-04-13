@@ -151,13 +151,12 @@ AUTH_RULES = {
 
     ("Anthem BCBS Medicaid (JLJ)", "Monitor"):       "Not Serving",
     ("Anthem BCBS Medicaid (JLJ)", "Sensors"):       "Not Serving",
-    ("Anthem BCBS Medicaid (JLJ)", "Insulin Pump"):  "Yes",
-    ("Anthem BCBS Medicaid (JLJ)", "Infusion Set"):  "Evaluate",
-    ("Anthem BCBS Medicaid (JLJ)", "Cartridge"):     "Evaluate",
+    # JLJ Insulin Pump: plan-level only (Non-MLTC=Yes, MLTC=Yes); base handled by plan overrides
+    # JLJ Infusion Set / Cartridge: routed to Medicaid insurance, looked up under Medicaid rules
 
     ("Anthem BCBS Low-Cost (JLJ)", "Monitor"):       "Not Serving",
     ("Anthem BCBS Low-Cost (JLJ)", "Sensors"):       "Not Serving",
-    ("Anthem BCBS Low-Cost (JLJ)", "Insulin Pump"):  "Evaluate",
+    # JLJ Low-Cost Insulin Pump: plan-level only (Non-MLTC=Evaluate, MLTC=Evaluate); base handled by plan overrides
     ("Anthem BCBS Low-Cost (JLJ)", "Infusion Set"):  "No",
     ("Anthem BCBS Low-Cost (JLJ)", "Cartridge"):     "No",
 
@@ -187,28 +186,42 @@ AUTH_RULES = {
 
     ("Medicaid", "Monitor"):       "Not Serving",
     ("Medicaid", "Sensors"):       "Not Serving",
-    ("Medicaid", "Insulin Pump"):  "Evaluate",
-    ("Medicaid", "Infusion Set"):  "Evaluate",
-    ("Medicaid", "Cartridge"):     "Evaluate",
+    ("Medicaid", "Insulin Pump"):  "Yes",
+    ("Medicaid", "Infusion Set"):  "Yes",
+    ("Medicaid", "Cartridge"):     "Yes",
 }
 
-# Everything else (BCBS TN/FL/WY, United *, Cigna, Humana, Wellcare,
-# Midlands Choice, MagnaCare, UMR, Oregon Care, NYSHIP) → Evaluate
+# Humana: Monitor/Sensors = Yes, rest = Evaluate
+AUTH_RULES[("Humana", "Monitor")]  = "Yes"
+AUTH_RULES[("Humana", "Sensors")]  = "Yes"
+
+# NYSHIP: Monitor/Sensors/Insulin Pump = Yes, Infusion Set/Cartridge = No
+AUTH_RULES[("NYSHIP", "Monitor")]      = "Yes"
+AUTH_RULES[("NYSHIP", "Sensors")]      = "Yes"
+AUTH_RULES[("NYSHIP", "Insulin Pump")] = "Yes"
+AUTH_RULES[("NYSHIP", "Infusion Set")] = "No"
+AUTH_RULES[("NYSHIP", "Cartridge")]    = "No"
+
+# Everything else defaults to Evaluate (setdefault won't overwrite explicit rules above)
 _EVALUATE_CARRIERS = [
     "BCBS TN", "BCBS FL", "BCBS WY",
     "United Medicare", "United Medicaid", "United Commercial", "United Low-Cost",
-    "NYSHIP", "Cigna", "Humana", "Wellcare",
+    "Cigna", "Humana", "Wellcare",
     "Midlands Choice", "MagnaCare", "UMR", "Oregon Care",
+    "NYSHIP",
 ]
 for _carrier in _EVALUATE_CARRIERS:
     for _prod in ("Monitor", "Sensors", "Insulin Pump", "Infusion Set", "Cartridge"):
         AUTH_RULES.setdefault((_carrier, _prod), "Evaluate")
 
-# Plan-level overrides
-AUTH_PLAN_OVERRIDES = {
-    ("Anthem BCBS Medicaid (JLJ)", "MLTC", "Insulin Pump"):     "Yes",
-    ("Anthem BCBS Low-Cost (JLJ)", "MLTC", "Insulin Pump"):     "Evaluate",
-}
+# JLJ Medicaid: Insulin Pump = Yes for both MLTC and Non-MLTC
+AUTH_RULES[("Anthem BCBS Medicaid (JLJ)", "Insulin Pump")] = "Yes"
+# JLJ Low-Cost: Insulin Pump = Evaluate for both MLTC and Non-MLTC
+AUTH_RULES[("Anthem BCBS Low-Cost (JLJ)", "Insulin Pump")] = "Evaluate"
+
+# Plan-level overrides (currently none needed — both JLJ plan variants
+# have the same auth value, so the base rule suffices)
+AUTH_PLAN_OVERRIDES = {}
 
 
 def get_auth_requirement(primary_insurance, product, insurance_plan=""):

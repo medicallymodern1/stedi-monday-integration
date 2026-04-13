@@ -249,12 +249,10 @@ def resolve_intake_fields(item_fields):
         out[COL_SUPPLIES_INS_ACTIVE] = NOT_SERVING
         log.append("  Supplies bucket → Not Serving")
 
-    # Determine resolved insurance for supply-side products
-    supplies_ins = (
-        "Medicaid"
-        if supplies_to_medicaid and _is_serving(serving, "supplies_bucket")
-        else primary_ins
-    )
+    # Determine resolved insurance for supply-side products.
+    # When primary insurance routes supplies to Medicaid, always use "Medicaid"
+    # for auth/network/HCPC lookups — regardless of current serving status.
+    supplies_ins = "Medicaid" if supplies_to_medicaid else primary_ins
 
     # ── Step 4: per-product fields ────────────────────────────────────────
 
