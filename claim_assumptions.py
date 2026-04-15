@@ -295,8 +295,8 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID = {
 
 FIXED_SERVICE_UNIT_COUNT_BY_PROCEDURE_AND_PAYER = {
     "A4224": {
-        "Cigna": "13",
-        "__default__": "14",
+        "Medicare A&B": "12",
+        "__default__": "13",
     },
     "A4225": {
         "Medicare A&B": "40",
