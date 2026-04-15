@@ -81,6 +81,7 @@ PAYER_ID_MAP = {
     "Anthem BCBS Low-Cost (JLJ)": "803",
     "Fidelis Commercial": "11315",
     "Fidelis Medicaid": "11315",
+    "Fidelis Low-Cost": "11315",
     "Medicare A&B": "16013",
     "NYSHIP": "87726",
     "United Commercial": "87726",
@@ -105,6 +106,7 @@ CLAIM_FILING_CODE_MAP = {
     "Anthem BCBS Low-Cost (JLJ)": "MC",
     "Fidelis Commercial": "CI",
     "Fidelis Medicaid": "MC",
+    "Fidelis Low-Cost": "MC",
     "Medicare A&B": "MB",
     "NYSHIP": "CI",
     "United Commercial": "CI",
@@ -195,6 +197,10 @@ PAYER_SUPPLY_PROCEDURE_CODE_MAP = {
         "cartridge": "A4232",
     },
     "Fidelis Medicaid": {
+        "infusion_set": "A4230",
+        "cartridge": "A4232",
+    },
+    "Fidelis Low-Cost": {
         "infusion_set": "A4230",
         "cartridge": "A4232",
     },
@@ -362,6 +368,13 @@ PAYER_RATE_SCHEDULE = {
         pump_rate=4000,
         infusion_rate=15.2,   # Medicaid rate — supply lines always split to Medicaid (MCDNY)
         cartridge_rate=3.61,  # Medicaid rate — supply lines always split to Medicaid (MCDNY)
+        monitor_rate=None,
+        sensor_rate=None,
+    ),
+    "Fidelis Low-Cost": dict(
+        pump_rate=4000,
+        infusion_rate=15.2,
+        cartridge_rate=3.61,
         monitor_rate=None,
         sensor_rate=None,
     ),
