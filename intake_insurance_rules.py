@@ -288,4 +288,14 @@ def get_coinsurance(primary_insurance, stedi_coinsurance, insurance_plan=""):
     override = COINSURANCE_OVERRIDES.get(primary_insurance)
     if override is not None:
         return str(int(override)) if override == 0 else str(override)
+    # Stedi returns coinsurance as a decimal (e.g. 0.05 = 5%).
+    # Convert to whole-number percentage to match Monday numeric columns.
+    if stedi_coinsurance:
+        try:
+            val = float(stedi_coinsurance)
+            if val < 1:
+                val = val * 100
+            return str(int(val)) if val == int(val) else str(val)
+        except (ValueError, TypeError):
+            pass
     return stedi_coinsurance or ""
