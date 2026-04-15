@@ -373,10 +373,10 @@ PAYER_RATE_SCHEDULE = {
     ),
     "Fidelis Low-Cost": dict(
         pump_rate=4000,
-        infusion_rate=15.2,
-        cartridge_rate=3.61,
-        monitor_rate=None,
-        sensor_rate=None,
+        infusion_rate=11.17,
+        cartridge_rate=2.65,
+        monitor_rate=193.97,
+        sensor_rate=216.67,
     ),
     "Medicare A&B": dict(
         pump_rate=576.0,
