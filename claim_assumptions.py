@@ -78,6 +78,7 @@ PAYER_ID_MAP = {
     "Anthem BCBS Commercial": "803",
     "Anthem BCBS Medicare": "803",
     "Anthem BCBS Medicaid (JLJ)": "803",
+    "Anthem BCBS Low-Cost (JLJ)": "803",
     "Fidelis Commercial": "11315",
     "Fidelis Medicaid": "11315",
     "Medicare A&B": "16013",
@@ -101,6 +102,7 @@ CLAIM_FILING_CODE_MAP = {
     "Anthem BCBS Commercial": "CI",
     "Anthem BCBS Medicare": "MB",
     "Anthem BCBS Medicaid (JLJ)": "MC",
+    "Anthem BCBS Low-Cost (JLJ)": "MC",
     "Fidelis Commercial": "CI",
     "Fidelis Medicaid": "MC",
     "Medicare A&B": "MB",
@@ -181,6 +183,10 @@ PAYER_SUPPLY_PROCEDURE_CODE_MAP = {
         "cartridge": "A4225",
     },
     "Anthem BCBS Medicaid (JLJ)": {
+        "infusion_set": "A4230",
+        "cartridge": "A4232",
+    },
+    "Anthem BCBS Low-Cost (JLJ)": {
         "infusion_set": "A4230",
         "cartridge": "A4232",
     },
@@ -332,6 +338,13 @@ PAYER_RATE_SCHEDULE = {
         sensor_rate=255.0,
     ),
     "Anthem BCBS Medicaid (JLJ)": dict(
+        pump_rate=4200.0,
+        infusion_rate=8.75,
+        cartridge_rate=2.95,
+        monitor_rate=None,
+        sensor_rate=None,
+    ),
+    "Anthem BCBS Low-Cost (JLJ)": dict(
         pump_rate=4200.0,
         infusion_rate=8.75,
         cartridge_rate=2.95,
