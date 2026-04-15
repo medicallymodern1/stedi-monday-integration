@@ -198,7 +198,7 @@ STATUS_INDEX_MAP = {
 
     # Primary Payor (color_mkxmhypt)
     "color_mkxmhypt": {
-        "MetroPlus": 0,    "Anthem BCBS": 1,    "Aetna": 2,
+        "Anthem BCBS Low-Cost (JLJ)": 0, "Anthem BCBS": 1, "Aetna": 2,
         "Fidelis": 3,      "Wellcare": 4,        "Medicare A & B": 6,
         "Cigna": 7,        "Humana": 8,          "health first": 9,
         "NYSHIP Empire": 10, "Medicaid": 11,     "BCBS Wyoming": 12,
@@ -286,6 +286,7 @@ SUBITEM_PAYER_FALLBACK = {
     "Anthem BCBS":                "Anthem BCBS Commercial",
     "Anthem BCBS Medicare":       "Anthem BCBS Commercial",
     "Anthem BCBS Medicaid (JLJ)": "Anthem BCBS Commercial",
+    "Anthem BCBS Low-Cost (JLJ)": "Anthem BCBS Commercial",
     "Fidelis":                    "Fidelis CHP",
     "Fidelis Commercial":         "Fidelis CHP",
     "Fidelis Medicaid":           "Fidelis CHP",
