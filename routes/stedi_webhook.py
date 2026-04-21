@@ -146,10 +146,10 @@ async def handle_277_event(transaction_id: str, detail: dict) -> None:
     logger.info(f"[277] Processing transaction_id={transaction_id}")
     try:
         report = get_277_report(transaction_id)
-        status, rejection_reason, pcn, claim_id = parse_277_status(report)
-        logger.info(f"[277] status={status} | pcn={pcn} | claim_id={claim_id}")
+        status, rejection_reason, pcn, claim_id, category_code = parse_277_status(report)
+        logger.info(f"[277] status={status} | category={category_code} | pcn={pcn} | claim_id={claim_id}")
 
-        monday_status = _map_277_status(status, report)
+        monday_status = _map_277_status(status, report, category_code)
         logger.info(f"[277] monday_status={monday_status}")
 
         claims_item_id = ""
@@ -170,16 +170,25 @@ async def handle_277_event(transaction_id: str, detail: dict) -> None:
         logger.error(f"[277] Failed: {e}", exc_info=True)
 
 
-def _map_277_status(raw_status: str, report: dict) -> str:
+def _map_277_status(raw_status: str, report: dict, category_code: str = "") -> str:
     """
     Map raw 277 status to Monday 277 Status label.
     PRD 14 values: Stedi Accepted, Stedi Rejected, Payer Accepted, Payer Rejected
 
-    IMPORTANT:
-    Determine Stedi vs payer from source metadata first.
-    If the 277 source is clearly STEDI INC / Clearinghouse, classify it as
-    Stedi-level even if the status category code is A1.
+    Logic:
+    - A0 is always Stedi-level (clearinghouse acknowledgement)
+    - A2 is always Payer-level (accepted into adjudication)
+    - A1 can be either — use source metadata (STEDI INC / CLEARINGHOUSE) to decide
+    - Rejections (A3, A6, A7, A8, DR05-07) are always Payer-level
     """
+
+    # A2 is always payer-level — accepted into adjudication system
+    if category_code == "A2":
+        return "Payer Accepted"
+
+    # Rejection codes are always payer-level
+    if category_code in ("A3", "A6", "A7", "A8", "DR05", "DR06", "DR07"):
+        return "Payer Rejected"
 
     payer = {}
     try:
@@ -258,7 +267,7 @@ def _map_277_status(raw_status: str, report: dict) -> str:
 def parse_277_status(report: dict) -> tuple:
     """
     Extract claim status from 277 report.
-    Returns (status, rejection_reason, patient_account_number)
+    Returns (status, rejection_reason, patient_account_number, claim_id, category_code)
     """
     try:
         claims = (
@@ -286,23 +295,29 @@ def parse_277_status(report: dict) -> tuple:
         category_code = info_statuses.get("healthCareClaimStatusCategoryCode", "")
         status_value  = info_statuses.get("statusCodeValue", "")
 
-        # A0 = Acknowledged at clearinghouse (Stedi accepted, forwarded to payer)
-        # A1 = Accepted by payer
-        # A2 = Not found / pending at payer (NOT the same as rejected — claim received by Stedi)
-        # A3 = Rejected by payer
-        # A4 = Pending
-        if category_code in ("A1", "A0"):
+        # Rejection codes confirmed by Stedi support:
+        REJECTION_CODES = {"A3", "A6", "A7", "A8", "DR05", "DR06", "DR07"}
+
+        # A0  = Acknowledged at clearinghouse (Stedi accepted, forwarded to payer)
+        # A1  = Accepted for processing (Stedi or Payer — determined by _map_277_status)
+        # A2  = Accepted into adjudication system (Payer accepted)
+        # A4  = Not found / pending (not a rejection — claim still processing)
+        # A3, A6, A7, A8, DR05, DR06, DR07 = Rejected
+        if category_code in ("A0", "A1"):
             status = "Accepted"
             rejection_reason = ""
-        elif category_code == "A3":
+        elif category_code == "A2":
+            # A2 = accepted into payer adjudication system — this is payer-level acceptance
+            status = "Accepted"
+            rejection_reason = ""
+        elif category_code in REJECTION_CODES:
             status = "Rejected"
             rejection_reason = status_value
-        elif category_code == "A2":
-            # A2 = payer has not yet found the claim — Stedi received it, payer pending
-            # Treat as Accepted at Stedi level (not a rejection)
-            status = "Accepted"
+        elif category_code == "A4":
+            status = "Pending"
             rejection_reason = ""
         else:
+            # Unknown code — log it but don't assume rejected
             status = "Pending"
             rejection_reason = status_value
 
@@ -319,11 +334,11 @@ def parse_277_status(report: dict) -> tuple:
             pass
 
         logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number} | claim_id={claim_id}")
-        return status, rejection_reason, patient_account_number, claim_id
+        return status, rejection_reason, patient_account_number, claim_id, category_code
 
     except Exception as e:
         logger.error(f"[277] parse failed: {e}")
-        return "Unknown", "", "", ""
+        return "Unknown", "", "", "", ""
 
 #
 # def find_order_item_by_pcn(patient_control_number: str) -> str:
