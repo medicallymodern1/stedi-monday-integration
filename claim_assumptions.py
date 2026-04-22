@@ -273,7 +273,6 @@ CGM_UNITS_DIVISOR_MAP = {
     "Dexcom G7 15-Day": 2,
     "Instinct": 2,
     "Dexcom G7": 3,
-    "Dexcom G6": 3,
     "Guardian 4": 4,
 }
 
