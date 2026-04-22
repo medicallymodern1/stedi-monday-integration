@@ -47,6 +47,9 @@ CLAIMS_PARENT_COL = {
     # Test field — read to determine usageIndicator (PRD 12.1)
     # Update column ID once confirmed on Claims Board
     "is_test": "color_mm1z59nj",  # Stedi Test (status) — confirmed from board export
+    # Corrected/Void claim support
+    "claim_type": "color_mm2nvk1p",          # Claim Type (status): Original / Corrected / Void
+    "payer_claim_number": "text_mm2nfytt",   # Payer Claim Number (text) — from 277 tradingPartnerClaimNumber
 }
 
 CLAIMS_SUBITEM_COL = {
@@ -133,6 +136,9 @@ def extract_parent_fields(item: dict) -> dict:
         "auth": t(CLAIMS_PARENT_COL["auth"]),
         # PRD 12.1: read test field to determine usageIndicator
         "is_test": t(CLAIMS_PARENT_COL["is_test"]).strip().lower() == "test",
+        # Corrected/Void claim support
+        "claim_type": t(CLAIMS_PARENT_COL["claim_type"]),
+        "payer_claim_number": t(CLAIMS_PARENT_COL["payer_claim_number"]),
     }
 
 
@@ -151,6 +157,21 @@ def extract_subitem_fields(subitem: dict) -> dict:
         "est_pay": t(CLAIMS_SUBITEM_COL["est_pay"]),
         "auth_id": t(CLAIMS_SUBITEM_COL["auth_id"]),
     }
+
+
+# ── Claim frequency code ──────────────────────────────────────────────────────
+
+CLAIM_TYPE_TO_FREQUENCY_CODE = {
+    "Original":  "1",
+    "Corrected": "7",
+    "Void":      "8",
+}
+
+
+def _resolve_claim_frequency_code(parent: dict) -> str:
+    """Map Claim Type status to CMS-1500 Box 22 frequency code."""
+    claim_type = (parent.get("claim_type") or "").strip()
+    return CLAIM_TYPE_TO_FREQUENCY_CODE.get(claim_type, "1")
 
 
 # ── Payload builder ───────────────────────────────────────────────────────────
@@ -345,7 +366,7 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
             "patientControlNumber": pcn,
             "claimChargeAmount": f"{total_charge:.2f}",
             "placeOfServiceCode": "12",
-            "claimFrequencyCode": "1",
+            "claimFrequencyCode": _resolve_claim_frequency_code(parent),
             "signatureIndicator": "Y",
             "planParticipationCode": "A",
             "benefitsAssignmentCertificationIndicator": "Y",
@@ -359,6 +380,18 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
             "serviceLines": service_lines,
         },
     }
+
+    # For corrected/void claims, add the original payer claim reference
+    payer_claim_num = (parent.get("payer_claim_number") or "").strip()
+    claim_type = (parent.get("claim_type") or "").strip()
+    if claim_type in ("Corrected", "Void") and payer_claim_num:
+        payload["claimInformation"]["referenceIdentification"] = payer_claim_num
+        logger.info(f"[SUBMIT] {claim_type} claim — referencing payer claim {payer_claim_num}")
+    elif claim_type in ("Corrected", "Void") and not payer_claim_num:
+        raise ValueError(
+            f"Claim Type is '{claim_type}' but Payer Claim Number is empty. "
+            "Cannot submit a corrected/void claim without the original payer claim number."
+        )
 
     logger.info(
         f"[SUBMIT] Payload built: payer={trading_partner_name} "

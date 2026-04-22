@@ -10,6 +10,7 @@ Stedi fires this webhook when:
 Endpoint: POST /webhooks/stedi
 """
 
+import json
 import logging
 import os
 from typing import Any, Dict
@@ -146,8 +147,8 @@ async def handle_277_event(transaction_id: str, detail: dict) -> None:
     logger.info(f"[277] Processing transaction_id={transaction_id}")
     try:
         report = get_277_report(transaction_id)
-        status, rejection_reason, pcn, claim_id, category_code = parse_277_status(report)
-        logger.info(f"[277] status={status} | category={category_code} | pcn={pcn} | claim_id={claim_id}")
+        status, rejection_reason, pcn, claim_id, category_code, payer_claim_number = parse_277_status(report)
+        logger.info(f"[277] status={status} | category={category_code} | pcn={pcn} | claim_id={claim_id} | payer_claim={payer_claim_number}")
 
         monday_status = _map_277_status(status, report, category_code)
         logger.info(f"[277] monday_status={monday_status}")
@@ -165,6 +166,26 @@ async def handle_277_event(transaction_id: str, detail: dict) -> None:
 
         update_277_on_claims_board(claims_item_id, monday_status, rejection_reason)
         logger.info(f"[277] Updated Claims Board item {claims_item_id} to {monday_status}")
+
+        # Write payer claim number to Claims Board (needed for corrected/void resubmissions)
+        if payer_claim_number:
+            PAYER_CLAIM_NUM_COL = "text_mm2nfytt"
+            mutation = """
+            mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+              change_column_value(item_id: $itemId, board_id: $boardId,
+                                  column_id: $columnId, value: $value) { id }
+            }
+            """
+            try:
+                run_query(mutation, {
+                    "itemId": str(claims_item_id),
+                    "boardId": str(os.getenv("MONDAY_CLAIMS_BOARD_ID")),
+                    "columnId": PAYER_CLAIM_NUM_COL,
+                    "value": json.dumps(str(payer_claim_number)),
+                })
+                logger.info(f"[277] Wrote payer claim number {payer_claim_number} to item {claims_item_id}")
+            except Exception as e:
+                logger.warning(f"[277] Failed to write payer claim number: {e}")
 
     except Exception as e:
         logger.error(f"[277] Failed: {e}", exc_info=True)
@@ -267,7 +288,7 @@ def _map_277_status(raw_status: str, report: dict, category_code: str = "") -> s
 def parse_277_status(report: dict) -> tuple:
     """
     Extract claim status from 277 report.
-    Returns (status, rejection_reason, patient_account_number, claim_id, category_code)
+    Returns (status, rejection_reason, patient_account_number, claim_id, category_code, payer_claim_number)
     """
     try:
         claims = (
@@ -333,12 +354,19 @@ def parse_277_status(report: dict) -> tuple:
         except Exception:
             pass
 
-        logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number} | claim_id={claim_id}")
-        return status, rejection_reason, patient_account_number, claim_id, category_code
+        # Extract payer's claim number (tradingPartnerClaimNumber) — needed for corrected/void claims
+        payer_claim_number = ""
+        try:
+            payer_claim_number = claim_status.get("tradingPartnerClaimNumber", "")
+        except Exception:
+            pass
+
+        logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number} | claim_id={claim_id} | payer_claim={payer_claim_number}")
+        return status, rejection_reason, patient_account_number, claim_id, category_code, payer_claim_number
 
     except Exception as e:
         logger.error(f"[277] parse failed: {e}")
-        return "Unknown", "", "", "", ""
+        return "Unknown", "", "", "", "", ""
 
 #
 # def find_order_item_by_pcn(patient_control_number: str) -> str:
