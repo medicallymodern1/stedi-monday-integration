@@ -378,7 +378,7 @@ PAYER_RATE_SCHEDULE = {
         sensor_rate=216.67,
     ),
     "Medicare A&B": dict(
-        pump_rate=576.0,
+        pump_rate=600.0,
         infusion_rate=29.07,
         cartridge_rate=3.62,
         monitor_rate=322.63,
@@ -799,6 +799,10 @@ def resolve_procedure_modifiers(
 
         if procedure_code == "E2103":
             return ["NU"]
+
+    # Medicare A&B E0784: capped rental month 1 modifiers
+    if procedure_code == "E0784" and payer_name == "Medicare A&B":
+        return ["RR", "KH", "KX"]
 
     if procedure_code == "E0784":
         return E0784_MODIFIERS.copy()

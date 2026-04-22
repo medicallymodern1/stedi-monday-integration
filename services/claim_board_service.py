@@ -16,6 +16,7 @@ import re
 import json
 import logging
 from datetime import date
+from calendar import monthrange
 from services.monday_service import run_query
 
 logger = logging.getLogger(__name__)
@@ -923,6 +924,9 @@ def create_claims_board_items_from_order(order_item: dict) -> list:
                 _create_subitems(item_id, claim)
                 created_ids.append(item_id)
                 logger.info(f"[CLAIMS] Created Claims Board item {item_id} for {claim['patient_name']}")
+
+                # Medicare A&B E0784 pump rental: create 12 future monthly claims
+                _create_future_pump_rental_claims(claim)
         except Exception as e:
             logger.error(f"[CLAIMS] Failed to create claim item: {e}", exc_info=True)
 
@@ -1124,6 +1128,186 @@ def _create_subitems(parent_item_id: str, claim: dict) -> None:
 
         except Exception as e:
             logger.warning(f"[CLAIMS] Failed creating subitem '{line_name}': {e}", exc_info=True)
+
+
+# =============================================================================
+# MEDICARE A&B PUMP RENTAL — FUTURE CLAIMS (Months 2–13)
+# =============================================================================
+
+FUTURE_CLAIMS_GROUP_ID = "topics"
+PUMP_RENTAL_CHARGE = "600.00"
+
+# Month → modifier set for E0784 capped rental
+PUMP_RENTAL_MODIFIERS = {
+    2:  ["RR", "KI", "KX"],
+    3:  ["RR", "KI", "KX"],
+    4:  ["RR", "KJ", "KX"],
+    5:  ["RR", "KJ", "KX"],
+    6:  ["RR", "KJ", "KX"],
+    7:  ["RR", "KJ", "KX"],
+    8:  ["RR", "KJ", "KX"],
+    9:  ["RR", "KJ", "KX"],
+    10: ["RR", "KJ", "KX"],
+    11: ["RR", "KJ", "KX"],
+    12: ["RR", "KJ", "KX"],
+    13: ["RR", "KJ", "KX"],
+}
+
+
+def _add_months(iso_date: str, months: int) -> str:
+    """Add N months to an ISO date string (YYYY-MM-DD), clamping day to month end."""
+    try:
+        parts = iso_date.split("-")
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        m += months
+        while m > 12:
+            m -= 12
+            y += 1
+        max_day = monthrange(y, m)[1]
+        d = min(d, max_day)
+        return f"{y:04d}-{m:02d}-{d:02d}"
+    except Exception:
+        return iso_date
+
+
+def _create_future_pump_rental_claims(claim: dict) -> None:
+    """
+    Medicare A&B only: after creating the month-1 pump claim,
+    create 12 future monthly claims (months 2–13) in the Future Claims group.
+    Each gets one E0784 subitem with the appropriate rental modifiers.
+    """
+    payer = claim.get("resolved_primary_payor", "")
+    if payer != "Medicare A&B":
+        return
+
+    # Check if this claim group has an E0784 pump line
+    pump_line = None
+    for line in claim.get("service_lines", []):
+        if line.get("resolved_hcpc_code") == "E0784":
+            pump_line = line
+            break
+
+    if not pump_line:
+        return
+
+    patient_name = claim.get("patient_name", "Unknown")
+    base_dos = claim.get("computed_dos", "")
+    if not base_dos:
+        logger.warning(f"[FUTURE] No DOS for {patient_name} — skipping future pump claims")
+        return
+
+    logger.info(f"[FUTURE] Creating 12 future pump rental claims for {patient_name}")
+
+    create_mut = """
+    mutation CreateItem($boardId: ID!, $groupId: String!, $itemName: String!) {
+      create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName) { id }
+    }
+    """
+    update_mut = """
+    mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(item_id: $itemId, board_id: $boardId,
+                          column_id: $columnId, value: $value) { id }
+    }
+    """
+    create_sub_mut = """
+    mutation CreateSubitem($parentId: ID!, $itemName: String!) {
+      create_subitem(parent_item_id: $parentId, item_name: $itemName) {
+        id board { id }
+      }
+    }
+    """
+
+    for month_num in range(2, 14):
+        try:
+            item_name = f"{patient_name} - Pump Month {month_num}"
+            future_dos = _add_months(base_dos, month_num - 1)
+            modifiers = PUMP_RENTAL_MODIFIERS[month_num]
+
+            # Create parent item in Future Claims group
+            result = run_query(create_mut, {
+                "boardId": CLAIMS_BOARD_ID,
+                "groupId": FUTURE_CLAIMS_GROUP_ID,
+                "itemName": item_name,
+            })
+            parent_id = result.get("data", {}).get("create_item", {}).get("id", "")
+            if not parent_id:
+                logger.warning(f"[FUTURE] Failed to create item for month {month_num}")
+                continue
+
+            logger.info(f"[FUTURE] Created {item_name} (id={parent_id}, DOS={future_dos})")
+
+            # Write parent fields — same patient/doctor info, adjusted DOS
+            parent_fields = [
+                (CLAIMS_PARENT_COL["dob"],              "text",     claim.get("dob")),
+                (CLAIMS_PARENT_COL["member_id"],        "text",     claim.get("member_id")),
+                (CLAIMS_PARENT_COL["doctor"],           "text",     claim.get("doctor_name")),
+                (CLAIMS_PARENT_COL["npi"],              "text",     claim.get("doctor_npi")),
+                (CLAIMS_PARENT_COL["secondary_id"],     "text",     claim.get("secondary_id")),
+                (CLAIMS_PARENT_COL["auth"],             "text",     claim.get("auth_id", "")),
+                (CLAIMS_PARENT_COL["pr_payor_id"],      "text",     claim.get("resolved_primary_payor_id")),
+                (CLAIMS_PARENT_COL["patient_phone"],    "phone",    claim.get("patient_phone")),
+                (CLAIMS_PARENT_COL["dr_phone"],         "phone",    claim.get("doctor_phone")),
+                (CLAIMS_PARENT_COL["address"],          "location", claim.get("patient_address")),
+                (CLAIMS_PARENT_COL["doctor_address"],   "location", claim.get("doctor_address")),
+                (CLAIMS_PARENT_COL["dos"],              "date",     future_dos),
+                (CLAIMS_PARENT_COL["referral"],         "dropdown", claim.get("referral")),
+                (CLAIMS_PARENT_COL["gender"],           "status",   claim.get("gender")),
+                (CLAIMS_PARENT_COL["diagnosis"],        "status",   claim.get("diagnosis_code")),
+                (CLAIMS_PARENT_COL["secondary_payer"],  "status",   claim.get("secondary_payer")),
+                (CLAIMS_PARENT_COL["subscription_type"],"status",   claim.get("subscription_type")),
+                (CLAIMS_PARENT_COL["cgm_coverage"],     "status",   claim.get("cgm_coverage")),
+                (CLAIMS_PARENT_COL["order_frequency"],  "status",   claim.get("order_frequency")),
+                (CLAIMS_PARENT_COL["primary_payor"],    "status",   claim.get("resolved_primary_payor")),
+            ]
+            for col_id, col_type, value in parent_fields:
+                _write_column(parent_id, CLAIMS_BOARD_ID, col_id,
+                              format_monday_value(col_type, value, col_id), update_mut)
+
+            # Create single E0784 subitem
+            sub_result = run_query(create_sub_mut, {
+                "parentId": str(parent_id),
+                "itemName": "Insulin Pump",
+            })
+            subitem_id = sub_result.get("data", {}).get("create_subitem", {}).get("id", "")
+            subitem_board_id = sub_result.get("data", {}).get("create_subitem", {}).get("board", {}).get("id", "")
+
+            if not subitem_id or not subitem_board_id:
+                logger.warning(f"[FUTURE] Failed to create subitem for month {month_num}")
+                continue
+
+            mods_str = ", ".join(modifiers)
+            charge_num = float(PUMP_RENTAL_CHARGE)
+
+            subitem_fields = [
+                (CLAIMS_SUBITEM_COL["hcpc_code"],        "status",   "E0784",     True),
+                (CLAIMS_SUBITEM_COL["primary_insurance"], "status",   payer,       True),
+                (CLAIMS_SUBITEM_COL["modifiers"],        "dropdown",  mods_str,    False),
+                (CLAIMS_SUBITEM_COL["order_quantity"],   "numbers",   1,           False),
+                (CLAIMS_SUBITEM_COL["claim_quantity"],   "numbers",   1,           False),
+                (CLAIMS_SUBITEM_COL["charge_amount"],    "numbers",   charge_num,  False),
+                (CLAIMS_SUBITEM_COL["est_pay"],          "numbers",   charge_num,  False),
+            ]
+
+            for col_id, col_type, value, use_sub in subitem_fields:
+                if not col_id:
+                    continue
+                formatted = format_monday_value(col_type, value, col_id, use_subitem_map=use_sub)
+                if not formatted:
+                    continue
+                try:
+                    run_query(update_mut, {
+                        "itemId":   str(subitem_id),
+                        "boardId":  str(subitem_board_id),
+                        "columnId": col_id,
+                        "value":    formatted,
+                    })
+                except Exception as e:
+                    logger.warning(f"[FUTURE] Month {month_num} subitem col {col_id}: {e}")
+
+            logger.info(f"[FUTURE] Month {month_num} complete: mods={modifiers} charge=${PUMP_RENTAL_CHARGE} DOS={future_dos}")
+
+        except Exception as e:
+            logger.error(f"[FUTURE] Failed month {month_num} for {patient_name}: {e}", exc_info=True)
 
 
 # =============================================================================
