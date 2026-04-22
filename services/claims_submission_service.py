@@ -381,12 +381,14 @@ def build_payload_from_claims_board(parent: dict, subitems: list) -> tuple:
         },
     }
 
-    # For corrected/void claims, add the original payer claim reference
+    # For corrected/void claims, add the Payer Claim Control Number (PCCN)
+    # via claimSupplementalInformation.claimControlNumber  (REF*F8 in X12)
     payer_claim_num = (parent.get("payer_claim_number") or "").strip()
     claim_type = (parent.get("claim_type") or "").strip()
     if claim_type in ("Corrected", "Void") and payer_claim_num:
-        payload["claimInformation"]["referenceIdentification"] = payer_claim_num
-        logger.info(f"[SUBMIT] {claim_type} claim — referencing payer claim {payer_claim_num}")
+        payload["claimInformation"].setdefault("claimSupplementalInformation", {})
+        payload["claimInformation"]["claimSupplementalInformation"]["claimControlNumber"] = payer_claim_num
+        logger.info(f"[SUBMIT] {claim_type} claim — PCCN {payer_claim_num} via claimSupplementalInformation")
     elif claim_type in ("Corrected", "Void") and not payer_claim_num:
         raise ValueError(
             f"Claim Type is '{claim_type}' but Payer Claim Number is empty. "
