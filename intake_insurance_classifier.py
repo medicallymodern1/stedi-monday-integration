@@ -17,7 +17,7 @@ import json
 
 import requests
 
-from intake_insurance_rules import ALLOWED_PRIMARY_INSURANCE_LABELS
+from insurance_rules import ALLOWED_PRIMARY_INSURANCE_LABELS
 
 logger = logging.getLogger(__name__)
 

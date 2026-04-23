@@ -43,12 +43,13 @@ SUBSCRIPTION_BOARD_ID = os.getenv("MONDAY_SUBSCRIPTION_BOARD_ID", "18407459988")
 
 # Column IDs on the Subscription Board (verified 2026-04)
 SUBSCRIPTION_OUTPUT_COL = {
-    "active":      "color_mm2nzm33",   # status: "Active" / "Inactive" / "Medicare Advantage"
-    "plan_begin":  "date_mm2n4b26",    # date
-    "member_id":   "text_mm2phve4",    # text  ("Stedi Member ID")
-    "payer_name":  "dropdown_mm2nz3wd",# dropdown (auto-create labels)
-    "plan_name":   "dropdown_mm2n7ps1",# dropdown (auto-create labels)
-    "deductible":  "numeric_mm2nkcfx", # numbers
+    "active":               "color_mm2nzm33",   # status: "Active" / "Inactive" / "Medicare Advantage"
+    "plan_begin":           "date_mm2n4b26",    # date
+    "member_id":            "text_mm2phve4",    # text  ("Stedi Member ID")
+    "payer_name":           "dropdown_mm2nz3wd",# dropdown (auto-create labels)
+    "plan_name":            "dropdown_mm2n7ps1",# dropdown (auto-create labels)
+    "deductible":           "numeric_mm2nkcfx", # numbers
+    "prior_auth_required":  "color_mm2pj23n",   # status: "Yes" / "No" / "Evaluate"
 }
 
 # Run Check is the trigger column (user flips it to "Run" to fire the
@@ -107,6 +108,7 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     payer_name = (writeback.get("Stedi Payer Name") or "").strip()
     plan_name  = (writeback.get("Stedi Plan Name") or "").strip()
     ded_rem    = writeback.get("Stedi Individual Deductible Remaining")
+    pa_req     = (writeback.get("Sub Prior Auth Req?") or "").strip()
 
     values: dict[str, Any] = {}
 
@@ -163,6 +165,15 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
                 f"[SUB-ELG-MONDAY] Skipping Ded. Remaining — not numeric: "
                 f"{ded_rem!r}"
             )
+
+    # --- Prior Auth Req? (status) ----------------------------------------
+    # Labels on the board are "Yes" / "No" / "Evaluate". We write whatever
+    # the service-layer resolver produced; create_labels_if_missing on the
+    # mutation means the label will auto-create if it hasn't been added
+    # yet (so adding "Evaluate" to the column on Monday is optional from a
+    # robustness standpoint, though the user is adding it manually).
+    if pa_req in ("Yes", "No", "Evaluate"):
+        values[SUBSCRIPTION_OUTPUT_COL["prior_auth_required"]] = {"label": pa_req}
 
     return values
 

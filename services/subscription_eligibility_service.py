@@ -51,10 +51,11 @@ logger = logging.getLogger(__name__)
 # Subscription Board — INPUT column IDs (verified against live board export)
 # ---------------------------------------------------------------------------
 SUBSCRIPTION_COL = {
-    "primary_insurance": "color_mm254qxj",  # "Primary Insurance" — status, .text = label
-    "member_id":         "text_mkvp6zfg",   # "Member ID 1"
-    "dob":               "text_mkvdefh1",   # "DOB"
-    "run_check":         "color_mm2nnjam",  # "Run Check" — trigger column
+    "primary_insurance":  "color_mm254qxj",  # "Primary Insurance" — status, .text = label
+    "member_id":          "text_mkvp6zfg",   # "Member ID 1"
+    "dob":                "text_mkvdefh1",   # "DOB"
+    "run_check":          "color_mm2nnjam",  # "Run Check" — trigger column
+    "subscription_type":  "color_mm273mv8",  # "Subscription" (Sensors / Supplies / Sensors & Supplies)
 }
 
 
@@ -78,6 +79,7 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
     primary_insurance = cols.get(SUBSCRIPTION_COL["primary_insurance"], "").strip()
     member_id         = cols.get(SUBSCRIPTION_COL["member_id"], "").strip()
     dob               = cols.get(SUBSCRIPTION_COL["dob"], "").strip()
+    subscription_type = cols.get(SUBSCRIPTION_COL["subscription_type"], "").strip()
 
     # Subscription Board items are named "Firstname Lastname" (e.g. "Margaret Purifoy")
     first_name, last_name = _split_name(monday_item.get("name", ""))
@@ -85,6 +87,7 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
     logger.debug(
         f"[SUB-ELG-INPUT] primary_insurance={primary_insurance!r} "
         f"member_id={member_id!r} dob={dob!r} "
+        f"subscription_type={subscription_type!r} "
         f"first={first_name!r} last={last_name!r}"
     )
 
@@ -94,6 +97,7 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
         "First Name":            first_name,
         "Last Name":             last_name,
         "Patient Date of Birth": dob,
+        "Subscription Type":     subscription_type,
         # Identifiers for logging / controlNumber
         "Pulse ID": str(monday_item.get("id", "")),
         "Name":     monday_item.get("name", ""),
@@ -305,6 +309,76 @@ def _compute_subscription_plan_begin(raw_response: dict) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# SUBSCRIPTION TYPE → AUTH_RULES PRODUCT MAPPING
+# ---------------------------------------------------------------------------
+# The Subscription Board "Subscription" column has 3 labels:
+#
+#   "Sensors"            → A4239 CGM sensors              → ("Sensors",)
+#   "Supplies"           → A4230/A4231/A4224 (infusion)    → ("Infusion Set", "Cartridge")
+#                       + A4232/A4225 (cartridges)
+#   "Sensors & Supplies" → all three                      → ("Sensors", "Infusion Set", "Cartridge")
+#
+# E2103 (Monitor) and E0784 (Insulin Pump) are intentionally excluded -
+# the Subscription Board never orders those, so their AUTH_RULES entries
+# don't need to be consulted.
+
+_SUBSCRIPTION_TYPE_TO_PRODUCTS: dict[str, tuple[str, ...]] = {
+    "Sensors":             ("Sensors",),
+    "Supplies":            ("Infusion Set", "Cartridge"),
+    "Sensors & Supplies":  ("Sensors", "Infusion Set", "Cartridge"),
+}
+
+
+def _compute_prior_auth_required(
+    primary_insurance: str,
+    subscription_type: str,
+    insurance_plan: str = "",
+) -> str:
+    """
+    Resolve the "Prior Auth Req?" status from the shared AUTH_RULES table
+    (insurance_rules.get_auth_requirement) for every product implied by
+    the Subscription Type.
+
+    Rollup (matches the Monday status column which has 3 labels):
+      * any product → "Yes"       → "Yes"
+      * any product → "Evaluate"  (no Yes) → "Evaluate"
+      * all products → "No"       → "No"
+
+    "Not Serving" should never occur on the Subscription Board (by
+    definition we're only running checks for patients we serve). If it
+    does, we map it to "Evaluate" so billing sees the odd rule result
+    rather than silently treating it as No.
+
+    Returns "" (no write) when subscription_type is blank or not one of
+    the three recognised labels. The Monday writer skips blank values.
+    """
+    from insurance_rules import get_auth_requirement
+
+    products = _SUBSCRIPTION_TYPE_TO_PRODUCTS.get(subscription_type)
+    if not products:
+        logger.warning(
+            f"[SUB-ELG] Subscription Type {subscription_type!r} not recognised; "
+            f"skipping Prior Auth Req? write"
+        )
+        return ""
+
+    results = [
+        get_auth_requirement(primary_insurance, prod, insurance_plan)
+        for prod in products
+    ]
+    logger.info(
+        f"[SUB-ELG] PA lookup | primary={primary_insurance!r} "
+        f"sub_type={subscription_type!r} products={products} results={results}"
+    )
+
+    if any(r == "Yes" for r in results):
+        return "Yes"
+    if any(r in ("Evaluate", "Not Serving") for r in results):
+        return "Evaluate"
+    return "No"
+
+
 # Sentinel key set on the writeback dict when we couldn't determine coverage
 # and the Subscription flow should flip Run Check -> "Failed" instead of
 # writing any of the 5 Stedi output columns.
@@ -443,10 +517,20 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         sub_plan_begin = _compute_subscription_plan_begin(raw_response)
         if sub_plan_begin:
             writeback["Stedi Plan Begin Date"] = sub_plan_begin
+
+        # D4. Prior Auth Req? — shared AUTH_RULES lookup per product set
+        # implied by the Subscription Type. Not driven by the Stedi 271
+        # authOrCertIndicator at all; our rule table is the source of truth.
+        writeback["Sub Prior Auth Req?"] = _compute_prior_auth_required(
+            primary_insurance=row["Primary Insurance"],
+            subscription_type=row.get("Subscription Type", ""),
+        )
+
         logger.info(
             f"[SUB-ELG] ✓ Done | item={item_id} "
             f"active={sub_active!r} "
             f"is_ma={is_ma} ma_plan={ma_plan_name!r} "
+            f"pa_req={writeback.get('Sub Prior Auth Req?')!r} "
             f"part_b_active={writeback.get('Stedi Part B Active?')!r} "
             f"payer_name={writeback.get('Stedi Payer Name')!r} "
             f"plan_name={writeback.get('Stedi Plan Name')!r}"

@@ -1,5 +1,6 @@
 """
-intake_insurance_rules.py — Source-of-truth rule tables for Intake Board insurance logic.
+insurance_rules.py — Source-of-truth rule tables for insurance logic (shared across
+the Intake Board and Subscription Board flows).
 =========================================================================================
 
 This file mirrors the business-team’s Excel workbook and serves as the single

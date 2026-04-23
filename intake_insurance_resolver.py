@@ -16,7 +16,7 @@ Returns a dict of { monday_column_id: value_to_write }.
 
 import logging
 
-from intake_insurance_rules import (
+from insurance_rules import (
     ALLOWED_LABELS_SET,
     SUPPLIES_ROUTE_TO_MEDICAID,
     MONITOR_HCPC, SENSORS_HCPC, INSULIN_PUMP_HCPC,
