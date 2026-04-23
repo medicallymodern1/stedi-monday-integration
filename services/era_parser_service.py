@@ -11,6 +11,53 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# CARC / RARC description lookups
+# ---------------------------------------------------------------------------
+# Stedi's X12-typed JSON does not include human-readable descriptions for
+# adjustment reason codes or remark codes. We keep hand-curated maps in the
+# repo root (carc_map.json, rarc_map.json) so we can populate the
+# "Parsed Adjustment Reasons" and "Parsed Remark Text" columns on the
+# Claims Board with the text billing/support actually needs to see.
+#
+# If the files are missing or unreadable, we fail soft - codes still get
+# parsed, just without their description text.
+
+def _load_code_map(filename: str) -> dict:
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    path = _os.path.join(base, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        logger.info(f"Loaded {len(data)} entries from {filename}")
+        return data
+    except FileNotFoundError:
+        logger.warning(f"{filename} not found at {path} — descriptions disabled")
+        return {}
+    except Exception as e:
+        logger.warning(f"Failed to load {filename}: {e}")
+        return {}
+
+
+_CARC_DESCRIPTIONS = _load_code_map("carc_map.json")
+_RARC_DESCRIPTIONS = _load_code_map("rarc_map.json")
+
+
+def _describe_carc(code: str) -> str:
+    """Return the human-readable text for a CARC code, or '' if unknown."""
+    if not code:
+        return ""
+    return _CARC_DESCRIPTIONS.get(str(code).strip(), "") or ""
+
+
+def _describe_rarc(code: str) -> str:
+    """Return the human-readable text for a RARC code, or '' if unknown."""
+    if not code:
+        return ""
+    return _RARC_DESCRIPTIONS.get(str(code).strip(), "") or ""
+
+
 def safe_float(value):
     try:
         if value in ("", None):
@@ -232,6 +279,14 @@ def _parse_x12_service_adjustments(cas_list: list) -> dict:
                 codes.append(group)
             if rc:
                 carc.append(rc)
+                # Look up the human-readable CARC text for this reason code;
+                # prefixed with group-code so billing can see e.g.
+                # "CO-50: These are non-covered services because this is not
+                # deemed a medical necessity...".
+                desc = _describe_carc(rc)
+                if desc:
+                    prefix = f"{group}-{rc}" if group else rc
+                    reasons.append(f"{prefix}: {desc}")
 
             if group == "PR":
                 result["Parsed PR Amount"] += amt
@@ -265,15 +320,19 @@ def _parse_x12_service_adjustments(cas_list: list) -> dict:
 def _parse_x12_remark_codes(lq_list: list) -> dict:
     """Extract remark codes from the health_care_remark_codes_LQ array."""
     codes = []
+    texts = []
     for lq in (lq_list or []):
         if not isinstance(lq, dict):
             continue
         code = str(lq.get("remark_code_02", "") or "").strip()
         if code:
             codes.append(code)
+            desc = _describe_rarc(code)
+            if desc:
+                texts.append(f"{code}: {desc}")
     return {
         "Parsed Remark Codes": "; ".join(codes),
-        "Parsed Remark Text":  "",   # typed JSON rarely carries the human text
+        "Parsed Remark Text":  "; ".join(texts),
         "Parsed RARC Codes":   "; ".join(codes),
     }
 
@@ -501,7 +560,12 @@ def _parse_single_x12_claim(
         line_item_charge = format_amount(svc.get("line_item_charge_amount_02"))
 
         # AMT loop — "B6" qualifier = Allowed amount (aka Raw Allowed Actual).
-        allowed_actual = None
+        # Default to 0 when B6 is absent (common on denied lines where the
+        # payer writes off the full charge and doesn't emit a B6), rather
+        # than leaving the Monday cell blank. Blank reads as "unknown" to
+        # billing; $0 reads as "payer allowed nothing", which is the
+        # accurate interpretation for a denied line.
+        allowed_actual = 0.0
         for amt in (svc_loop.get("service_supplemental_amount_AMT") or []):
             if not isinstance(amt, dict):
                 continue
