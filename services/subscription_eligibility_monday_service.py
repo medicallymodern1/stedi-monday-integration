@@ -13,7 +13,7 @@ Payer Name / Plan Name dropdowns auto-add labels for unseen payers and plans.
 
 Column IDs verified against live board export 2026-04:
 
-  color_mm2nzm33   "Active?"           (status)   labels: 1="Active" / 2="Inactive"
+  color_mm2nzm33   "Active?"           (status)   labels: "Active" / "Inactive" / "Medicare Advantage"
   date_mm2n4b26    "Date Plan Begin"   (date)
   dropdown_mm2nz3wd "Stedi Payer Name"  (dropdown) labels auto-created
   dropdown_mm2n7ps1 "Stedi Plan Name"   (dropdown) labels auto-created
@@ -101,11 +101,16 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
 
     # --- Active? (status) -------------------------------------------------
-    # Parser returns "Yes" / "No". Board labels are "Active" / "Inactive".
+    # Parser returns "Yes", "No", or "Medicare Advantage".
+    # Board labels are "Active", "Inactive", and "Medicare Advantage"
+    # (the MA label was added on the board so billing knows not to bill
+    # CMS 16013 for those patients).
     if active_yn == "Yes":
         values[SUBSCRIPTION_OUTPUT_COL["active"]] = {"label": "Active"}
     elif active_yn == "No":
         values[SUBSCRIPTION_OUTPUT_COL["active"]] = {"label": "Inactive"}
+    elif active_yn == "Medicare Advantage":
+        values[SUBSCRIPTION_OUTPUT_COL["active"]] = {"label": "Medicare Advantage"}
     # Anything else (blank, unexpected) -> leave the cell untouched.
 
     # --- Date Plan Begin (date) ------------------------------------------

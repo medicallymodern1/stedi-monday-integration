@@ -168,6 +168,90 @@ def _compute_subscription_active(raw_response: dict) -> str:
     return "No"
 
 
+def _compute_subscription_ma(raw_response: dict) -> tuple[bool, str]:
+    """
+    Detect Medicare Advantage enrollment in a Medicare (CMS / payer 16013)
+    eligibility response, and extract the MA plan's display name.
+
+    When we run an eligibility check against Medicare for a patient who is
+    actually enrolled in an MA plan, CMS still responds - it confirms the
+    member's Medicare entitlement (planStatus.statusCode=1) - but it also
+    includes an "EB*U" ("Contact Following Entity for Eligibility or
+    Benefit Information") line that points at the administering MA plan.
+    If we mark the row plain "Active", billing will send the claim to CMS
+    16013 and it will deny ("benefits applicable to another payer").
+
+    Instead we flag the row as "Medicare Advantage" and rewrite the payer
+    name to the MA plan so the billing team sees who actually owns the
+    member.
+
+    MA-specific signals used (either alone is sufficient):
+
+      1. A ``benefitsInformation`` entry with ``code == "U"`` whose
+         ``benefitsAdditionalInformation.planNumber`` starts with "H".
+         H-numbers are CMS-assigned MA contract IDs (e.g. H2001 =
+         UnitedHealthcare Group Medicare Advantage). Non-MA plans on a
+         Medicare 271 use S-numbers (Part D) or no plan number at all.
+      2. An ``additionalInformation`` entry whose description contains
+         ``"MA Bill Option Code"`` - CMS's explicit text flag that
+         claims should be billed to the MA plan, not to Medicare.
+
+    MA plan name resolution (first non-empty wins):
+
+      1. ``benefitsAdditionalInformation.planNetworkDescription`` -
+         branded MA plan name, e.g. "UnitedHealthcare Group Medicare
+         Advantage". Preferred because it names the plan, not the
+         claims administrator.
+      2. ``benefitsRelatedEntity.entityName`` - the administering entity
+         (e.g. "SIERRA HEALTH AND LIFE INSURANCE COMPANY, INC."). Used
+         only when the plan description is missing.
+      3. First entry of ``benefitsRelatedEntities[*].entityName``.
+
+    Returns ``(is_ma, ma_plan_name)``. ``ma_plan_name`` may be empty
+    even when ``is_ma`` is True if the response had no resolvable name,
+    in which case the caller should leave the payer name column alone.
+    """
+    benefits = raw_response.get("benefitsInformation") or []
+
+    for b in benefits:
+        if not isinstance(b, dict):
+            continue
+
+        code      = str(b.get("code", "")).strip().upper()
+        addl      = b.get("benefitsAdditionalInformation") or {}
+        plan_num  = str(addl.get("planNumber", "")).strip().upper()
+        info_list = b.get("additionalInformation") or []
+        info_text = " ".join(
+            str(x.get("description", ""))
+            for x in info_list
+            if isinstance(x, dict)
+        ).upper()
+
+        is_ma_hit = False
+        # Signal 1: U code + H-number plan ID
+        if code == "U" and plan_num.startswith("H") and len(plan_num) >= 4:
+            is_ma_hit = True
+        # Signal 2: explicit CMS MA Bill Option Code text
+        if "MA BILL OPTION CODE" in info_text:
+            is_ma_hit = True
+
+        if not is_ma_hit:
+            continue
+
+        # Resolve plan name
+        name = (addl.get("planNetworkDescription") or "").strip()
+        if not name:
+            rel = b.get("benefitsRelatedEntity") or {}
+            if isinstance(rel, dict):
+                name = (rel.get("entityName") or "").strip()
+        if not name:
+            rels = b.get("benefitsRelatedEntities") or []
+            if rels and isinstance(rels[0], dict):
+                name = (rels[0].get("entityName") or "").strip()
+
+        return True, name
+
+    return False, ""
 
 
 def _compute_subscription_plan_begin(raw_response: dict) -> str:
@@ -268,12 +352,29 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         # D. Parse response -> full writeback dict (same parser as Intake flow)
         writeback = parse_eligibility_response(raw_response)
 
-        # D2. Override Active? with a Subscription-specific flag.
-        # The Intake parser's Part B Active is Medicare-specific (service
-        # type 12 required). For the Subscription Board we want a broader
-        # "is this plan active overall?" check derived from planStatus /
-        # benefitsInformation code 1.
-        sub_active = _compute_subscription_active(raw_response)
+        # D2. Compute Active? for the Subscription Board.
+        #
+        # First check for Medicare Advantage enrollment, because an MA
+        # patient's CMS 271 ALSO contains planStatus.statusCode=1 (CMS
+        # confirms Medicare entitlement). If we don't catch MA here, the
+        # broader active check will write "Active" and billing will send
+        # the claim to CMS 16013 and get denied ("benefits applicable to
+        # another payer"). When MA is detected we write "Medicare
+        # Advantage" instead, and override Stedi Payer Name with the MA
+        # plan so the board shows who actually owns the member.
+        #
+        # For non-MA responses (commercial plans + traditional Medicare
+        # A&B), use the broad active check from planStatus /
+        # benefitsInformation code 1 - which handles commercial plans
+        # that don't surface service type 12 the way the Intake Part B
+        # parser requires.
+        is_ma, ma_plan_name = _compute_subscription_ma(raw_response)
+        if is_ma:
+            sub_active = "Medicare Advantage"
+            if ma_plan_name:
+                writeback["Stedi Payer Name"] = ma_plan_name
+        else:
+            sub_active = _compute_subscription_active(raw_response)
         writeback["Sub Stedi Active?"] = sub_active
 
         # D3. Override Stedi Plan Begin Date with a broader lookup.
@@ -286,6 +387,7 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         logger.info(
             f"[SUB-ELG] ✓ Done | item={item_id} "
             f"active={sub_active!r} "
+            f"is_ma={is_ma} ma_plan={ma_plan_name!r} "
             f"part_b_active={writeback.get('Stedi Part B Active?')!r} "
             f"payer_name={writeback.get('Stedi Payer Name')!r} "
             f"plan_name={writeback.get('Stedi Plan Name')!r}"
