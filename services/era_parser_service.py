@@ -147,6 +147,137 @@ def parse_remark_codes(remark_codes):
     }
 
 
+# =============================================================================
+# X12-TYPED ERA PARSER (heading / detail / summary format)
+# =============================================================================
+# Stedi's Change-Healthcare-backed endpoint
+# (/change/medicalnetwork/reports/v2/{id}/835) returns ERAs in a typed X12
+# JSON shape: top-level heading/detail/summary, snake_case field names with
+# positional suffixes (_01, _02, _03...). This is NOT the same as the
+# classic Stedi SDK format (transactions[].detailInfo[].paymentInfo[]) that
+# parse_era_stedi_format expects.
+#
+# Everything below is the alternate parsing path for the typed X12 format.
+
+
+def _iter_x12_cas_slots(cas: dict):
+    """
+    Yield each populated reason/amount slot from one CAS segment.
+
+    X12 CAS positions:
+      slot 1: CAS02 reason, CAS03 amount, CAS04 qty
+      slot 2: CAS05 reason, CAS06 amount, CAS07 qty
+      slot 3: CAS08, CAS09, CAS10
+      slot 4: CAS11, CAS12, CAS13
+      slot 5: CAS14, CAS15, CAS16
+      slot 6: CAS17, CAS18, CAS19
+
+    In Stedi's typed JSON these become adjustment_reason_code_02,
+    adjustment_amount_03, ..., adjustment_reason_code_17, adjustment_amount_18.
+    """
+    for reason_pos, amount_pos in [
+        ("02", "03"),
+        ("05", "06"),
+        ("08", "09"),
+        ("11", "12"),
+        ("14", "15"),
+        ("17", "18"),
+    ]:
+        amt = cas.get(f"adjustment_amount_{amount_pos}")
+        if amt in (None, ""):
+            continue
+        rc = str(cas.get(f"adjustment_reason_code_{reason_pos}", "") or "").strip()
+        yield {"reason_code": rc, "amount": safe_float(amt)}
+
+
+def _parse_x12_service_adjustments(cas_list: list) -> dict:
+    """
+    Aggregate all adjustments for one service line into the same-shaped dict
+    parse_service_adjustments produces for the older Stedi SDK format.
+    Keys match what populate_era_service_line_subitems expects.
+    """
+    result = {
+        "Parsed Adjustment Codes":   "",
+        "Parsed Adjustment Reasons": "",
+        "Parsed CARC Codes":         "",
+        "Parsed PR Amount":          0.0,
+        "Parsed Deductible Amount":  0.0,
+        "Parsed Coinsurance Amount": 0.0,
+        "Parsed Copay Amount":       0.0,
+        "Parsed Other PR Amount":    0.0,
+        "Parsed CO Amount":          0.0,
+        "Parsed CO-45 Amount":       0.0,
+        "Parsed CO-253 Amount":      0.0,
+        "Parsed Other CO Amount":    0.0,
+        "Parsed OA Amount":          0.0,
+        "Parsed PI Amount":          0.0,
+    }
+
+    codes   = []  # "CO-45"
+    carc    = []  # "45"
+    reasons = []  # text descriptions if ever present (Stedi typed JSON rarely carries them)
+
+    for cas in (cas_list or []):
+        if not isinstance(cas, dict):
+            continue
+        group = str(cas.get("claim_adjustment_group_code_01", "") or "").strip().upper()
+
+        for slot in _iter_x12_cas_slots(cas):
+            rc  = slot["reason_code"]
+            amt = slot["amount"]
+
+            if group and rc:
+                codes.append(f"{group}-{rc}")
+            elif group:
+                codes.append(group)
+            if rc:
+                carc.append(rc)
+
+            if group == "PR":
+                result["Parsed PR Amount"] += amt
+                if rc == "1":
+                    result["Parsed Deductible Amount"]  += amt
+                elif rc == "2":
+                    result["Parsed Coinsurance Amount"] += amt
+                elif rc == "3":
+                    result["Parsed Copay Amount"]       += amt
+                else:
+                    result["Parsed Other PR Amount"]    += amt
+            elif group == "CO":
+                result["Parsed CO Amount"] += amt
+                if rc == "45":
+                    result["Parsed CO-45 Amount"]    += amt
+                elif rc == "253":
+                    result["Parsed CO-253 Amount"]   += amt
+                else:
+                    result["Parsed Other CO Amount"] += amt
+            elif group == "OA":
+                result["Parsed OA Amount"] += amt
+            elif group == "PI":
+                result["Parsed PI Amount"] += amt
+
+    result["Parsed Adjustment Codes"]   = "; ".join(codes)
+    result["Parsed Adjustment Reasons"] = "; ".join(reasons)
+    result["Parsed CARC Codes"]         = "; ".join(carc)
+    return result
+
+
+def _parse_x12_remark_codes(lq_list: list) -> dict:
+    """Extract remark codes from the health_care_remark_codes_LQ array."""
+    codes = []
+    for lq in (lq_list or []):
+        if not isinstance(lq, dict):
+            continue
+        code = str(lq.get("remark_code_02", "") or "").strip()
+        if code:
+            codes.append(code)
+    return {
+        "Parsed Remark Codes": "; ".join(codes),
+        "Parsed Remark Text":  "",   # typed JSON rarely carries the human text
+        "Parsed RARC Codes":   "; ".join(codes),
+    }
+
+
 # 835 Claim Status Code → human-readable label
 CLAIM_STATUS_LABELS = {
     "1":  "Processed as Primary",
@@ -309,19 +440,185 @@ def parse_era_json(era_json: dict) -> dict:
     return _parse_single_payment(era_json, paid_date, remittance_trace, era_date)
 
 
+def _parse_single_x12_claim(
+    clp_obj: dict,
+    paid_date: str,
+    remittance_trace: str,
+    era_date: str,
+) -> dict:
+    """
+    Parse one claim_payment_information_CLP_loop entry into the
+    {parent, children} dict shape the Monday writer expects.
+    """
+    clp = clp_obj.get("claim_payment_information_CLP") or {}
+
+    patient_control = str(clp.get("patient_control_number_01", "") or "")
+    claim_status    = str(clp.get("claim_status_code_02",    "") or "")
+
+    parent = {
+        # 7 client-required Raw columns
+        "raw_patient_control_num":    patient_control,
+        "raw_payer_claim_control":    clp.get("payer_claim_control_number_07", "") or "",
+        "raw_total_claim_charge":     format_amount(clp.get("total_claim_charge_amount_03")),
+        "raw_remittance_trace":       remittance_trace,
+        "raw_patient_responsibility": format_amount(clp.get("patient_responsibility_amount_05")),
+        "raw_era_date":               era_date,
+        "raw_era_claim_status":       claim_status_label(claim_status),
+        # Existing working parent columns
+        "primary_paid":               format_amount(clp.get("claim_payment_amount_04")),
+        "pr_amount":                  format_amount(clp.get("patient_responsibility_amount_05")),
+        "paid_date":                  paid_date,
+        "check_number":               remittance_trace,
+        "primary_status":             claim_status_label(claim_status),
+    }
+
+    logger.info(
+        f"ERA X12 parent: pcn={patient_control} | paid={parent['primary_paid']} | "
+        f"pr={parent['pr_amount']} | trace={remittance_trace} | era_date={era_date}"
+    )
+
+    children = []
+    for svc_loop in (clp_obj.get("service_payment_information_SVC_loop") or []):
+        if not isinstance(svc_loop, dict):
+            continue
+
+        svc       = svc_loop.get("service_payment_information_SVC") or {}
+        composite = svc.get("composite_medical_procedure_identifier_01") or {}
+
+        procedure_code = str(composite.get("adjudicated_procedure_code_02", "") or "").strip()
+
+        # Service date — DTM array; take first usable entry (qualifier 472 preferred).
+        service_date = ""
+        for dtm in (svc_loop.get("service_date_DTM") or []):
+            if not isinstance(dtm, dict):
+                continue
+            raw = dtm.get("service_date_02") or dtm.get("claim_date_02") or ""
+            if raw:
+                service_date = format_stedi_date(raw)
+                break
+
+        line_item_paid   = format_amount(svc.get("line_item_provider_payment_amount_03"))
+        line_item_charge = format_amount(svc.get("line_item_charge_amount_02"))
+
+        # AMT loop — "B6" qualifier = Allowed amount (aka Raw Allowed Actual).
+        allowed_actual = None
+        for amt in (svc_loop.get("service_supplemental_amount_AMT") or []):
+            if not isinstance(amt, dict):
+                continue
+            qual = str(amt.get("amount_qualifier_code_01", "") or "").strip().upper()
+            if qual == "B6":
+                allowed_actual = format_amount(amt.get("service_supplemental_amount_02"))
+                break
+
+        parsed_adj     = _parse_x12_service_adjustments(svc_loop.get("service_adjustment_CAS"))
+        parsed_remarks = _parse_x12_remark_codes(svc_loop.get("health_care_remark_codes_LQ"))
+
+        line_ref = svc_loop.get("line_item_control_number_REF") or {}
+        line_control_number = (
+            line_ref.get("line_item_control_number_02", "")
+            if isinstance(line_ref, dict) else ""
+        )
+
+        child = {
+            # Identifiers
+            "Raw Line Item Control Number": line_control_number,
+            "Patient Control #":            patient_control,
+            "HCPC Code":                    procedure_code,
+            # Dates
+            "Raw Service Date":             service_date,
+            # Amounts
+            "Primary Paid":                 line_item_paid,
+            "Raw Line Item Paid Amount":    line_item_paid,
+            "Raw Line Item Charge Amount":  line_item_charge,
+            "Raw Allowed Actual":           allowed_actual,
+            # Adjustment breakdown
+            "Parsed PR Amount":             parsed_adj.get("Parsed PR Amount",          0.0),
+            "Parsed Deductible Amount":     parsed_adj.get("Parsed Deductible Amount",  0.0),
+            "Parsed Coinsurance Amount":    parsed_adj.get("Parsed Coinsurance Amount", 0.0),
+            "Parsed Copay Amount":          parsed_adj.get("Parsed Copay Amount",       0.0),
+            "Parsed Other PR Amount":       parsed_adj.get("Parsed Other PR Amount",    0.0),
+            "Parsed CO Amount":             parsed_adj.get("Parsed CO Amount",          0.0),
+            "Parsed CO-45 Amount":          parsed_adj.get("Parsed CO-45 Amount",       0.0),
+            "Parsed CO-253 Amount":         parsed_adj.get("Parsed CO-253 Amount",      0.0),
+            "Parsed Other CO Amount":       parsed_adj.get("Parsed Other CO Amount",    0.0),
+            "Parsed OA Amount":             parsed_adj.get("Parsed OA Amount",          0.0),
+            "Parsed PI Amount":             parsed_adj.get("Parsed PI Amount",          0.0),
+            # Code strings
+            "Parsed Adjustment Codes":      parsed_adj.get("Parsed Adjustment Codes",   ""),
+            "Parsed CARC Codes":            parsed_adj.get("Parsed CARC Codes",         ""),
+            "Parsed RARC Codes":            parsed_remarks.get("Parsed RARC Codes",     ""),
+            "Parsed Remark Codes":          parsed_remarks.get("Parsed Remark Codes",   ""),
+            "Parsed Remark Text":           parsed_remarks.get("Parsed Remark Text",    ""),
+            "Parsed Adjustment Reasons":    parsed_adj.get("Parsed Adjustment Reasons", ""),
+        }
+
+        logger.info(
+            f"  X12 Line {procedure_code}: paid={child['Primary Paid']} | "
+            f"allowed={child['Raw Allowed Actual']} | "
+            f"PR={child['Parsed PR Amount']} | CO={child['Parsed CO Amount']} | "
+            f"CARC={child['Parsed CARC Codes']} | RARC={child['Parsed RARC Codes']}"
+        )
+        children.append(child)
+
+    return {"parent": parent, "children": children}
+
+
+def parse_era_x12_typed_format(era_json: dict) -> list:
+    """
+    Parse the X12-typed JSON 835 shape (heading / detail / summary with
+    snake_case + positional suffixes). This is what Stedi returns from
+    /change/medicalnetwork/reports/v2/{id}/835.
+
+    Returns the same list-of-{parent, children} dicts the other branches
+    produce, so downstream code (summarize_era_row_for_monday +
+    populate_era_service_line_subitems) works without any changes.
+    """
+    results = []
+
+    heading = era_json.get("heading") or {}
+    detail  = era_json.get("detail")  or {}
+
+    # Envelope fields — each is an object in typed JSON.
+    fin_info  = heading.get("financial_information_BPR")      or {}
+    trn       = heading.get("reassociation_trace_number_TRN") or {}
+    prod_dtm  = heading.get("production_date_DTM")            or {}
+
+    paid_date        = format_stedi_date(fin_info.get("check_issue_or_eft_effective_date_16", "") or "")
+    remittance_trace = trn.get("check_or_eft_trace_number_02", "") or ""
+    era_date         = format_stedi_date(prod_dtm.get("production_date_02", "") or "")
+
+    # Walk LX → CLP loops. Each CLP is a claim; one ERA can carry many.
+    for lx_loop in (detail.get("header_number_LX_loop") or []):
+        if not isinstance(lx_loop, dict):
+            continue
+        for clp_obj in (lx_loop.get("claim_payment_information_CLP_loop") or []):
+            if not isinstance(clp_obj, dict):
+                continue
+            results.append(
+                _parse_single_x12_claim(clp_obj, paid_date, remittance_trace, era_date)
+            )
+
+    logger.info(f"Parsed {len(results)} ERA row(s) from X12-typed format")
+    return results
+
+
 def parse_era_from_string(era_content: str) -> list:
-    """Parse ERA from raw string — handles both Stedi API and flat formats"""
+    """Parse ERA from raw string — handles Stedi X12-typed, Stedi SDK, and flat formats."""
     if not era_content:
         return []
     try:
         era_json = json.loads(era_content)
+        # X12-typed JSON (current Stedi /change/medicalnetwork/reports/v2 output)
+        if "heading" in era_json and "detail" in era_json:
+            return parse_era_x12_typed_format(era_json)
+        # Classic Stedi SDK format
         if "transactions" in era_json:
             return parse_era_stedi_format(era_json)
-        elif "claimPaymentInfo" in era_json:
+        # Flat legacy single-claim format
+        if "claimPaymentInfo" in era_json:
             return [parse_era_json(era_json)]
-        else:
-            logger.error(f"Unknown ERA format. Top-level keys: {list(era_json.keys())}")
-            return []
+        logger.error(f"Unknown ERA format. Top-level keys: {list(era_json.keys())}")
+        return []
     except json.JSONDecodeError as e:
         logger.error(f"ERA JSON decode failed: {e}")
         return []
