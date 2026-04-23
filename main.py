@@ -20,6 +20,8 @@ ENVIRONMENT VARIABLES (set in .env):
   MONDAY_API_TOKEN       = your Monday.com API token
   MONDAY_ORDER_BOARD_ID  = New Order Board ID
   MONDAY_CLAIMS_BOARD_ID = Claims Board ID
+  MONDAY_INTAKE_BOARD_ID = Intake Board ID (for Stedi eligibility on intake)
+  MONDAY_SUBSCRIPTION_BOARD_ID = Subscription Board ID (for Stedi eligibility on subscriptions; defaults to 18407459988)
   STEDI_API_KEY          = your Stedi API key
   STEDI_CLAIM_ENDPOINT   = Stedi claim submission URL
   WEBHOOK_SECRET         = Monday webhook signing secret
@@ -40,6 +42,7 @@ from routes.eligibility_webhook import router as eligibility_router
 from routes.order_webhook import router as order_router
 from routes.claims_webhook import router as claims_router
 from routes.intake_insurance_webhook import router as intake_insurance_router
+from routes.subscription_eligibility_webhook import router as subscription_eligibility_router
 from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
 from services.monday_service import populate_era_data_on_claims_item
 
@@ -68,6 +71,7 @@ app.include_router(order_router,  prefix="/order",  tags=["Order"])
 app.include_router(claims_router, prefix="/claims", tags=["Claims"])
 app.include_router(intake_insurance_router, prefix="/intake-insurance", tags=["Intake Insurance"])
 app.include_router(eligibility_router, prefix="/eligibility", tags=["Eligibility"])
+app.include_router(subscription_eligibility_router, prefix="/subscription-eligibility", tags=["Subscription Eligibility"])
 
 
 # ─── Health check ─────────────────────────────────────────────────────────────

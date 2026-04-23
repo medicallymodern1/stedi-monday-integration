@@ -149,14 +149,21 @@ def _resolve_trading_partner_name(payer_id: str) -> str:
 # Validation
 # ---------------------------------------------------------------------------
 
-def _validate_inputs(row: dict[str, Any]) -> None:
-    """Raise ValueError with a clear message for any missing required field."""
-    general_insurance = _safe_str(row.get("General Insurance"))
-    if not general_insurance:
-        raise ValueError("Missing required field: General Insurance")
+def _validate_inputs(row: dict[str, Any], *, payer_id: str | None = None) -> None:
+    """
+    Raise ValueError with a clear message for any missing required field.
 
-    # Payer mapping check (also validates MagnaCare placeholder)
-    payer_id = _resolve_payer_id(general_insurance)
+    If ``payer_id`` is supplied the caller has already resolved the payer
+    (e.g. the Subscription Board flow uses claim_assumptions.PAYER_ID_MAP),
+    so the "General Insurance" field is not required and the
+    GENERAL_PAYER_ID_MAP lookup is skipped.
+    """
+    if payer_id is None:
+        general_insurance = _safe_str(row.get("General Insurance"))
+        if not general_insurance:
+            raise ValueError("Missing required field: General Insurance")
+        # Payer mapping check (also validates MagnaCare placeholder)
+        _resolve_payer_id(general_insurance)
 
     if not _safe_str(row.get("Member ID")):
         raise ValueError("Missing required field: Member ID")
@@ -192,24 +199,54 @@ def build_eligibility_payload(
     row: dict[str, Any],
     *,
     service_type_codes: list[str] | None = None,
+    payer_id: str | None = None,
+    partner_name: str | None = None,
 ) -> dict[str, Any]:
     """
     Validate inputs and return a Stedi-compatible eligibility request payload.
 
-    row keys (from eligibility_service.extract_eligibility_inputs):
-      "General Insurance", "Member ID", "First Name", "Last Name",
-      "Patient Date of Birth", "Pulse ID", "Name"
+    Intake Board usage (default):
+      row keys (from eligibility_service.extract_eligibility_inputs):
+        "General Insurance", "Member ID", "First Name", "Last Name",
+        "Patient Date of Birth", "Pulse ID", "Name"
+      payer ID is resolved from GENERAL_PAYER_ID_MAP via ``General Insurance``.
+
+    Subscription Board usage:
+      Caller (services.subscription_eligibility_service) pre-resolves the
+      Stedi payer via ``claim_assumptions.PAYER_ID_MAP`` (keyed on the
+      specific Primary Insurance label e.g. "Fidelis Low-Cost") and passes
+      both ``payer_id`` and ``partner_name`` here. In that mode, the
+      "General Insurance" field is not required; the row may instead carry
+      a "Primary Insurance" key for logging.
 
     Raises ValueError for any validation failure so the caller can return
     a structured error to Monday without crashing.
     """
-    _validate_inputs(row)
+    _validate_inputs(row, payer_id=payer_id)
 
     from claim_assumptions import BILLING_PROVIDER_NPI, BILLING_PROVIDER_ORGANIZATION_NAME
 
-    general_insurance = _safe_str(row["General Insurance"])
-    payer_id          = _resolve_payer_id(general_insurance)
-    partner_name      = _resolve_trading_partner_name(payer_id)
+    if payer_id is None:
+        # Intake flow — resolve from GENERAL_PAYER_ID_MAP
+        general_insurance = _safe_str(row["General Insurance"])
+        payer_id          = _resolve_payer_id(general_insurance)
+        partner_name      = _resolve_trading_partner_name(payer_id)
+    else:
+        # Caller (Subscription flow) supplied the payer ID directly.
+        # Prefer the caller-supplied partner_name; fall back to the local
+        # STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID map, and only then raise.
+        general_insurance = _safe_str(
+            row.get("General Insurance") or row.get("Primary Insurance") or ""
+        )
+        if not _safe_str(partner_name):
+            partner_name = STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID.get(payer_id, "")
+        if not _safe_str(partner_name):
+            raise ValueError(
+                f"No Stedi trading partner name for payer ID: {payer_id!r}. "
+                f"Pass partner_name explicitly, or add it to "
+                f"STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID."
+            )
+
     dob               = _normalize_dob(row.get("Patient Date of Birth"))
     member_id         = _safe_str(row["Member ID"])
 

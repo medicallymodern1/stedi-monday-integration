@@ -96,6 +96,8 @@ PAYER_ID_MAP = {
     "Horizon BCBS": "11348",
     "BCBS TN": "SB890",
     "BCBS FL": "BCBSF",
+    "BCBS Wyoming": "53767",
+    "United Medicaid": "87726",
     "Stedi": "STEDITEST",
 }
 
@@ -121,6 +123,8 @@ CLAIM_FILING_CODE_MAP = {
     "Horizon BCBS": "CI",
     "BCBS TN": "CI",
     "BCBS FL": "CI",
+    "BCBS Wyoming": "CI",
+    "United Medicaid": "MC",
 }
 
 DEFAULT_CLAIM_FILING_CODE = "CI"
@@ -289,6 +293,7 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID = {
     "11348": "Horizon Blue Cross and Blue Shield of New Jersey",
     "SB890": "BlueCross BlueShield of Tennessee",
     "BCBSF": "Florida Blue",
+    "53767": "Blue Cross Blue Shield of Wyoming",
     "STEDITEST": "Stedi Test Payer",
 }
 
