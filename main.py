@@ -109,21 +109,66 @@ async def test_era_parse(body: EraTestBody):
 # PCN-match + populate_era_data_on_claims_item pipeline that handle_835_event
 # runs when a real webhook fires. Use to replay ERAs that didn't land the
 # first time because of parser/writer bugs now fixed.
-from fastapi import Request
+from fastapi import Request, BackgroundTasks
+import logging as _reprocess_logging
+
+_reprocess_logger = _reprocess_logging.getLogger("reprocess_era")
+
+
+def _reprocess_era_rows_background(era_rows: list) -> None:
+    """
+    Run the PCN-match + Monday writeback for each parsed ERA row.
+    Invoked from BackgroundTasks so the webhook can ACK in <1s; all the
+    heavy Monday API calls happen after the HTTP response is sent.
+    Logs each outcome (watch Railway logs for the [REPROCESS] prefix).
+    """
+    from services.era_parser_service import summarize_era_row_for_monday
+    from services.monday_service import populate_era_data_on_claims_item
+    from routes.stedi_webhook import _find_claims_item_by_pcn
+
+    for i, row in enumerate(era_rows, 1):
+        parent = row.get("parent", {}) or {}
+        pcn = parent.get("raw_patient_control_num", "") or ""
+        paid = parent.get("primary_paid")
+
+        try:
+            claims_item_id = _find_claims_item_by_pcn(pcn) if pcn else ""
+            if not claims_item_id:
+                _reprocess_logger.warning(
+                    f"[REPROCESS] ({i}/{len(era_rows)}) NO MATCH | "
+                    f"pcn={pcn!r} paid={paid}"
+                )
+                continue
+
+            summary = summarize_era_row_for_monday(row)
+            populate_era_data_on_claims_item(claims_item_id, summary)
+
+            carc = [c.get("Parsed CARC Codes", "") for c in row.get("children", [])]
+            rarc = [c.get("Parsed RARC Codes", "") for c in row.get("children", [])]
+            _reprocess_logger.info(
+                f"[REPROCESS] ({i}/{len(era_rows)}) WROTE | "
+                f"pcn={pcn!r} item={claims_item_id} paid={paid} "
+                f"carc={carc} rarc={rarc}"
+            )
+        except Exception as e:
+            _reprocess_logger.error(
+                f"[REPROCESS] ({i}/{len(era_rows)}) ERROR | "
+                f"pcn={pcn!r}: {e}",
+                exc_info=True,
+            )
+
 
 @app.post("/test/reprocess-era", tags=["Testing"])
-async def reprocess_era_json(request: Request):
+async def reprocess_era_json(request: Request, background_tasks: BackgroundTasks):
     """
-    POST the raw 835 ERA JSON as the request body. We'll parse it, find the
-    matching Claims Board item by Patient Control Number (PCN), and populate
-    the parent + subitem columns.
+    POST the raw 835 ERA JSON as the request body. We parse it synchronously
+    (fast), then kick off the PCN-match + Monday writeback as a background
+    task so the response returns in ~100ms instead of blocking for ~1 min
+    while we hammer the Monday API with 80+ sequential writes.
 
-    Returns a summary per claim:
-      {"pcn": "...", "status": "written" | "no_match_found" | "parse_empty",
-       "claims_item_id": "..." | None}
+    Response tells you what was queued; watch Railway logs with
+    [REPROCESS] prefix for per-claim match/write outcomes.
     """
-    # Accept raw JSON body (not a typed pydantic model, so we don't have to
-    # pre-declare every X12 suffix). The body comes in as bytes.
     raw = await request.body()
     if not raw:
         return {"status": "error", "message": "empty body"}
@@ -133,13 +178,7 @@ async def reprocess_era_json(request: Request):
     except UnicodeDecodeError as e:
         return {"status": "error", "message": f"body is not UTF-8: {e}"}
 
-    # Lazy imports so module startup cost is unaffected.
-    from services.era_parser_service import (
-        parse_era_from_string,
-        summarize_era_row_for_monday,
-    )
-    from services.monday_service import populate_era_data_on_claims_item
-    from routes.stedi_webhook import _find_claims_item_by_pcn
+    from services.era_parser_service import parse_era_from_string
 
     era_rows = parse_era_from_string(era_content)
     if not era_rows:
@@ -148,38 +187,34 @@ async def reprocess_era_json(request: Request):
             "message": "parser returned 0 rows — check format",
         }
 
-    results = []
+    # Synchronous preview so the caller gets an immediate confirmation
+    # of what will be processed. No Monday calls here; zero-latency.
+    preview = []
     for row in era_rows:
         parent = row.get("parent", {}) or {}
-        pcn = parent.get("raw_patient_control_num", "") or ""
+        preview.append({
+            "pcn":  parent.get("raw_patient_control_num", ""),
+            "paid": parent.get("primary_paid"),
+            "lines": [
+                {
+                    "hcpc": c.get("HCPC Code", ""),
+                    "carc": c.get("Parsed CARC Codes", ""),
+                    "rarc": c.get("Parsed RARC Codes", ""),
+                }
+                for c in row.get("children", [])
+            ],
+        })
 
-        claims_item_id = _find_claims_item_by_pcn(pcn) if pcn else ""
-        if not claims_item_id:
-            results.append({
-                "pcn": pcn,
-                "status": "no_match_found",
-                "claims_item_id": None,
-                "paid": parent.get("primary_paid"),
-            })
-            continue
+    # Fire-and-forget the actual Monday writes.
+    background_tasks.add_task(_reprocess_era_rows_background, era_rows)
 
-        try:
-            summary = summarize_era_row_for_monday(row)
-            populate_era_data_on_claims_item(claims_item_id, summary)
-            results.append({
-                "pcn": pcn,
-                "status": "written",
-                "claims_item_id": claims_item_id,
-                "paid": parent.get("primary_paid"),
-                "carc_sample": [c.get("Parsed CARC Codes", "") for c in row.get("children", [])],
-                "rarc_sample": [c.get("Parsed RARC Codes", "") for c in row.get("children", [])],
-            })
-        except Exception as e:
-            results.append({
-                "pcn": pcn,
-                "status": "error",
-                "claims_item_id": claims_item_id,
-                "error": str(e),
-            })
-
-    return {"status": "ok", "claims_parsed": len(era_rows), "results": results}
+    return {
+        "status": "queued",
+        "claims_queued": len(era_rows),
+        "preview": preview,
+        "message": (
+            "Parsing succeeded; Monday writes happening asynchronously. "
+            "Watch Railway logs for [REPROCESS] entries to see each per-claim "
+            "outcome. Check the Claims Board in ~60-120s."
+        ),
+    }
