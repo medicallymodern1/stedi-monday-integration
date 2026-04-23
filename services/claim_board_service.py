@@ -105,6 +105,7 @@ CLAIMS_PARENT_COL = {
     "subscription_type":"color_mky1qvcf",       # Subscription Type  (status)
     "cgm_coverage":     "color_mm1ze7b4",       # CGM Coverage  (status)
     "order_frequency":  "color_mky4mb3y",       # Frequency  (status)
+    "claim_type":       "color_mm2nvk1p",       # Claim Type  (status: Original / Corrected / Void)
 
     # PRD 8.2 — python-derived fields
     "primary_payor":    "color_mkxmhypt",       # Primary Payor  (status)
@@ -1014,6 +1015,12 @@ def _create_parent_item(claim: dict) -> str:
         (CLAIMS_PARENT_COL["cgm_coverage"],     "status",   claim.get("cgm_coverage")),
         (CLAIMS_PARENT_COL["order_frequency"],  "status",   claim.get("order_frequency")),
         (CLAIMS_PARENT_COL["primary_payor"],    "status",   claim.get("resolved_primary_payor")),
+        # Default every new claim to Original (frequency code 1). The
+        # submission code already falls back to "1" when Claim Type is
+        # blank, but writing the label explicitly keeps the board
+        # self-describing and lets filters on Claim Type=Original
+        # actually capture these rows.
+        (CLAIMS_PARENT_COL["claim_type"],       "status",   "Original"),
     ]
     for col_id, col_type, value in fields:
         _write_column(item_id, CLAIMS_BOARD_ID, col_id,
