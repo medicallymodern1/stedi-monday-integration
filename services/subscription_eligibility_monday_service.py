@@ -45,6 +45,7 @@ SUBSCRIPTION_BOARD_ID = os.getenv("MONDAY_SUBSCRIPTION_BOARD_ID", "18407459988")
 SUBSCRIPTION_OUTPUT_COL = {
     "active":      "color_mm2nzm33",   # status: "Active" / "Inactive" / "Medicare Advantage"
     "plan_begin":  "date_mm2n4b26",    # date
+    "member_id":   "text_mm2phve4",    # text  ("Stedi Member ID")
     "payer_name":  "dropdown_mm2nz3wd",# dropdown (auto-create labels)
     "plan_name":   "dropdown_mm2n7ps1",# dropdown (auto-create labels)
     "deductible":  "numeric_mm2nkcfx", # numbers
@@ -102,6 +103,7 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
         or ""
     ).strip()
     plan_begin = (writeback.get("Stedi Plan Begin Date") or "").strip()
+    member_id  = (writeback.get("Stedi Member ID") or "").strip()
     payer_name = (writeback.get("Stedi Payer Name") or "").strip()
     plan_name  = (writeback.get("Stedi Plan Name") or "").strip()
     ded_rem    = writeback.get("Stedi Individual Deductible Remaining")
@@ -132,6 +134,13 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
             f"[SUB-ELG-MONDAY] Skipping Date Plan Begin — unexpected format: "
             f"{plan_begin!r} (expected YYYY-MM-DD)"
         )
+
+    # --- Stedi Member ID (text) ------------------------------------------
+    # Just pass through whatever the 271 gave us; Monday text columns take
+    # a plain string. Skip when blank so we don't overwrite a good value
+    # with "" on a response that happened to lack subscriber.memberId.
+    if member_id:
+        values[SUBSCRIPTION_OUTPUT_COL["member_id"]] = member_id
 
     # --- Stedi Payer Name (dropdown) -------------------------------------
     if payer_name:

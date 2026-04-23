@@ -707,6 +707,7 @@ def parse_eligibility_response(response: dict) -> dict[str, Any]:
         "Stedi Part B Active?":              _parse_part_b_active(response),
         "Stedi Coverage Type":               coverage_type,
         "Stedi Payer Name":                  payer_name,
+        "Stedi Member ID":                   (response.get("subscriber") or {}).get("memberId", "") or "",
         "Stedi Plan Name":                   _parse_plan_name(response, coverage_type),
 
         # ── Medicare Advantage ────────────────────────────────────────────
@@ -767,6 +768,7 @@ def error_response(error_description: str) -> dict[str, Any]:
         "Stedi Part B Active?":              "",
         "Stedi Coverage Type":               "",
         "Stedi Payer Name":                  "",
+        "Stedi Member ID":                   "",
         "Stedi Plan Name":                   "",
         "Stedi Medicare Advantage?":         "",
         "Stedi Medicare Advantage Carrier":  "",
