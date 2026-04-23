@@ -168,6 +168,59 @@ def _compute_subscription_active(raw_response: dict) -> str:
     return "No"
 
 
+
+
+def _compute_subscription_plan_begin(raw_response: dict) -> str:
+    """
+    Compute "Date Plan Begin" for the Subscription Board.
+
+    The Intake parser's ``_parse_plan_begin_date`` only reads
+    ``planDateInformation.planBegin`` — which is what Medicare A&B returns.
+    Commercial payers (Anthem, BCBS, etc.) typically return a range under
+    ``planDateInformation.plan`` or ``planDateInformation.benefit`` instead,
+    e.g. "20241101-20260501", and no ``planBegin`` key at all.
+
+    Resolution order:
+      1. ``planDateInformation.planBegin``                        (Medicare)
+      2. start half of ``planDateInformation.plan`` range         (commercial)
+      3. start half of ``planDateInformation.benefit`` range      (fallback)
+      4. start half of the first planStatus ``planDateInformation.plan``
+
+    Returns ``""`` if nothing resolvable is present.
+    Output format: ``YYYY-MM-DD``.
+    """
+    def _fmt(raw: str) -> str:
+        raw = (raw or "").strip()
+        if not raw:
+            return ""
+        # Range "YYYYMMDD-YYYYMMDD" -> take the start
+        if "-" in raw and len(raw.split("-", 1)[0]) == 8:
+            raw = raw.split("-", 1)[0]
+        if len(raw) == 8 and raw.isdigit():
+            return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+        # Already YYYY-MM-DD? pass through
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            return raw
+        return ""
+
+    pdi = raw_response.get("planDateInformation") or {}
+
+    for key in ("planBegin", "plan", "benefit"):
+        out = _fmt(pdi.get(key, ""))
+        if out:
+            return out
+
+    # Per-planStatus fallback
+    for ps in raw_response.get("planStatus") or []:
+        inner = ps.get("planDateInformation") or {}
+        for key in ("planBegin", "plan", "benefit"):
+            out = _fmt(inner.get(key, ""))
+            if out:
+                return out
+
+    return ""
+
+
 def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
     """
     Full pipeline: Subscription Board item -> eligibility writeback dict.
@@ -222,6 +275,14 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         # benefitsInformation code 1.
         sub_active = _compute_subscription_active(raw_response)
         writeback["Sub Stedi Active?"] = sub_active
+
+        # D3. Override Stedi Plan Begin Date with a broader lookup.
+        # Intake parser only reads planDateInformation.planBegin (Medicare).
+        # Commercial payers return a range under planDateInformation.plan
+        # or .benefit; take the start of that range.
+        sub_plan_begin = _compute_subscription_plan_begin(raw_response)
+        if sub_plan_begin:
+            writeback["Stedi Plan Begin Date"] = sub_plan_begin
         logger.info(
             f"[SUB-ELG] ✓ Done | item={item_id} "
             f"active={sub_active!r} "
