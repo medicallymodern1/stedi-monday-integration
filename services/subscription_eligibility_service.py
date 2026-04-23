@@ -305,6 +305,52 @@ def _compute_subscription_plan_begin(raw_response: dict) -> str:
     return ""
 
 
+# Sentinel key set on the writeback dict when we couldn't determine coverage
+# and the Subscription flow should flip Run Check -> "Failed" instead of
+# writing any of the 5 Stedi output columns.
+SUB_FAILED_FLAG = "_subscription_failed"
+
+
+def _is_coverage_unavailable(raw_response: dict) -> tuple[bool, str]:
+    """
+    Detect the "payer located the patient but did not return coverage"
+    response — Stedi flags this explicitly via the top-level ``warnings``
+    array with ``code = "COVERAGE_INFORMATION_UNAVAILABLE"``.
+
+    When this fires, ``planStatus`` is typically empty and no
+    ``benefitsInformation`` entry carries ``code == "1"`` (Active
+    Coverage). The current Active? resolver would fall through to "No"
+    and the board would show "Inactive" — which is misleading because
+    the payer never said the patient is inactive, only that they
+    couldn't tell us. In that case we flip Run Check to "Failed" and
+    leave the rest of the Stedi columns untouched.
+
+    Returns ``(is_unavailable, reason_description)``.
+    """
+    warnings = raw_response.get("warnings") or []
+    for w in warnings:
+        if not isinstance(w, dict):
+            continue
+        code = str(w.get("code", "")).strip().upper()
+        if code == "COVERAGE_INFORMATION_UNAVAILABLE":
+            desc = str(w.get("description", "")).strip()
+            return True, desc or "Coverage information unavailable"
+    return False, ""
+
+
+def _failed_writeback(reason: str) -> dict:
+    """
+    Minimal writeback dict used when the eligibility check didn't yield
+    a usable answer. The Monday writer branches on ``SUB_FAILED_FLAG``
+    and writes only the Run Check column (-> "Failed"), leaving every
+    other column untouched.
+    """
+    return {
+        SUB_FAILED_FLAG: True,
+        "_failure_reason": reason,
+    }
+
+
 def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
     """
     Full pipeline: Subscription Board item -> eligibility writeback dict.
@@ -348,6 +394,19 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         # C. Send to Stedi (same client as Intake flow)
         raw_response = send_eligibility_request(payload)
         logger.info(f"[SUB-ELG] Response received | item={item_id}")
+
+        # C2. Short-circuit on COVERAGE_INFORMATION_UNAVAILABLE.
+        # When Stedi flags the response as coverage-unavailable, any
+        # writeback we produce would be misleading (Active? would
+        # default to "Inactive" even though the payer never said so).
+        # Flip Run Check -> "Failed" and skip the Stedi column writes.
+        is_unavail, unavail_reason = _is_coverage_unavailable(raw_response)
+        if is_unavail:
+            logger.warning(
+                f"[SUB-ELG] ! Coverage unavailable | item={item_id} "
+                f"reason={unavail_reason!r}"
+            )
+            return _failed_writeback(unavail_reason)
 
         # D. Parse response -> full writeback dict (same parser as Intake flow)
         writeback = parse_eligibility_response(raw_response)
@@ -397,7 +456,9 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
     except ValueError as e:
         msg = str(e)
         logger.warning(f"[SUB-ELG] ✗ Validation error | item={item_id}: {msg}")
-        return error_response(msg)
+        # Flip Run Check -> "Failed" so the board makes the error visible
+        # without clobbering any of the existing Stedi output columns.
+        return _failed_writeback(f"Validation error: {msg}")
 
     except Exception as e:
         msg = str(e)
@@ -405,4 +466,4 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
             f"[SUB-ELG] ✗ Unexpected error | item={item_id}: {msg}",
             exc_info=True,
         )
-        return error_response(msg)
+        return _failed_writeback(f"Unexpected error: {msg}")

@@ -43,12 +43,20 @@ SUBSCRIPTION_BOARD_ID = os.getenv("MONDAY_SUBSCRIPTION_BOARD_ID", "18407459988")
 
 # Column IDs on the Subscription Board (verified 2026-04)
 SUBSCRIPTION_OUTPUT_COL = {
-    "active":      "color_mm2nzm33",   # status: "Active" / "Inactive"
+    "active":      "color_mm2nzm33",   # status: "Active" / "Inactive" / "Medicare Advantage"
     "plan_begin":  "date_mm2n4b26",    # date
     "payer_name":  "dropdown_mm2nz3wd",# dropdown (auto-create labels)
     "plan_name":   "dropdown_mm2n7ps1",# dropdown (auto-create labels)
     "deductible":  "numeric_mm2nkcfx", # numbers
 }
+
+# Run Check is the trigger column (user flips it to "Run" to fire the
+# webhook). When the eligibility check can't produce a usable answer
+# (Stedi COVERAGE_INFORMATION_UNAVAILABLE, or validation / HTTP error),
+# we flip it to "Failed" so the row is visually distinct and never
+# mistaken for a real "Inactive" result.
+SUBSCRIPTION_RUN_CHECK_COL   = "color_mm2nnjam"
+SUBSCRIPTION_RUN_CHECK_FAILED_LABEL = "Failed"
 
 # change_multiple_column_values is the only Monday mutation that accepts
 # create_labels_if_missing, which we need for the two dropdowns.
@@ -155,10 +163,22 @@ def write_subscription_eligibility_to_monday(
     writeback: dict[str, Any],
 ) -> None:
     """
-    Write the 5 Subscription Board eligibility columns for ``item_id``.
+    Write the Subscription Board eligibility columns for ``item_id``.
 
-    One single change_multiple_column_values mutation covers all 5 columns.
-    Partial writeback is fine — any blank fields are just omitted.
+    Two branches:
+
+    * "Failed" path — when ``writeback`` carries ``_subscription_failed``
+      (set by the service layer for COVERAGE_INFORMATION_UNAVAILABLE,
+      validation errors, or HTTP errors), write ONLY the Run Check
+      column -> "Failed". All 5 result columns are deliberately left
+      untouched so we don't clobber whatever was already there (or
+      overwrite it with misleading blanks).
+
+    * Normal path — encode the 5 Subscription output columns and fire
+      one change_multiple_column_values mutation.
+
+    Partial writeback in the normal path is fine — any blank fields
+    are just omitted.
     """
     if not SUBSCRIPTION_BOARD_ID:
         logger.error(
@@ -167,6 +187,36 @@ def write_subscription_eligibility_to_monday(
         )
         return
 
+    # --- Failed path -----------------------------------------------------
+    if writeback.get("_subscription_failed"):
+        reason = str(writeback.get("_failure_reason") or "").strip()
+        values = {
+            SUBSCRIPTION_RUN_CHECK_COL: {
+                "label": SUBSCRIPTION_RUN_CHECK_FAILED_LABEL
+            }
+        }
+        try:
+            run_query(_UPDATE_MULTI_MUTATION, {
+                "itemId":       str(item_id),
+                "boardId":      str(SUBSCRIPTION_BOARD_ID),
+                "columnValues": json.dumps(values),
+                # create_labels_if_missing handles status labels too, so
+                # if "Failed" hasn't been added to the Run Check column
+                # yet Monday will create it on first use.
+                "createLabels": True,
+            })
+            logger.info(
+                f"[SUB-ELG-MONDAY] ✓ Run Check -> Failed for item {item_id} "
+                f"(reason: {reason!r})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[SUB-ELG-MONDAY] ✗ Failed-path write failed for "
+                f"item {item_id}: {e}"
+            )
+        return
+
+    # --- Normal path -----------------------------------------------------
     values = _encode_subscription_columns(writeback)
     if not values:
         logger.warning(
