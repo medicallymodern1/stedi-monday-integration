@@ -50,6 +50,7 @@ SUBSCRIPTION_OUTPUT_COL = {
     "plan_name":            "dropdown_mm2n7ps1",# dropdown (auto-create labels)
     "deductible":           "numeric_mm2nkcfx", # numbers
     "prior_auth_required":  "color_mm2pj23n",   # status: "Yes" / "No" / "Evaluate"
+    "insurance_change":     "color_mm2p8v3m",   # status: "Yes" / "No"
 }
 
 # Run Check is the trigger column (user flips it to "Run" to fire the
@@ -109,6 +110,7 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     plan_name  = (writeback.get("Stedi Plan Name") or "").strip()
     ded_rem    = writeback.get("Stedi Individual Deductible Remaining")
     pa_req     = (writeback.get("Sub Prior Auth Req?") or "").strip()
+    ins_change = (writeback.get("Sub Insurance Change?") or "").strip()
 
     values: dict[str, Any] = {}
 
@@ -172,8 +174,19 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     # mutation means the label will auto-create if it hasn't been added
     # yet (so adding "Evaluate" to the column on Monday is optional from a
     # robustness standpoint, though the user is adding it manually).
+    #
+    # The service layer returns "" when no PA (re)computation is needed
+    # (e.g. no insurance change, or first check). We drop blanks so the
+    # existing Monday cell is preserved.
     if pa_req in ("Yes", "No", "Evaluate"):
         values[SUBSCRIPTION_OUTPUT_COL["prior_auth_required"]] = {"label": pa_req}
+
+    # --- Insurance Change? (status) --------------------------------------
+    # Labels: "Yes" / "No". The service layer returns "" when it detects
+    # a first-ever check (all prior anchors blank); we skip the write so
+    # the cell stays empty instead of showing "No" on fresh rows.
+    if ins_change in ("Yes", "No"):
+        values[SUBSCRIPTION_OUTPUT_COL["insurance_change"]] = {"label": ins_change}
 
     return values
 

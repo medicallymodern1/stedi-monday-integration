@@ -56,6 +56,14 @@ SUBSCRIPTION_COL = {
     "dob":                "text_mkvdefh1",   # "DOB"
     "run_check":          "color_mm2nnjam",  # "Run Check" — trigger column
     "subscription_type":  "color_mm273mv8",  # "Subscription" (Sensors / Supplies / Sensors & Supplies)
+    # ---- PREVIOUS-STATE anchors (read only, for Insurance Change? diff) ----
+    # These are OUTPUT columns written by the Monday writer on prior runs.
+    # We read their pre-existing values BEFORE firing Stedi so we can
+    # compare old vs. new and compute the "Insurance Change?" flag.
+    "prev_stedi_member_id":   "text_mm2phve4",      # "Stedi Member ID"
+    "prev_stedi_payer_name":  "dropdown_mm2nz3wd",  # "Stedi Payer Name"
+    "prev_stedi_plan_name":   "dropdown_mm2n7ps1",  # "Stedi Plan Name"
+    "prev_active":            "color_mm2nzm33",     # "Active?" status
 }
 
 
@@ -81,6 +89,15 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
     dob               = cols.get(SUBSCRIPTION_COL["dob"], "").strip()
     subscription_type = cols.get(SUBSCRIPTION_COL["subscription_type"], "").strip()
 
+    # Prior eligibility outputs already on the board - used to detect
+    # insurance change by diffing against the fresh Stedi response.
+    # If ALL four are blank the caller treats this as a first-ever
+    # check and skips the Insurance Change? write.
+    prev_member_id  = cols.get(SUBSCRIPTION_COL["prev_stedi_member_id"], "").strip()
+    prev_payer_name = cols.get(SUBSCRIPTION_COL["prev_stedi_payer_name"], "").strip()
+    prev_plan_name  = cols.get(SUBSCRIPTION_COL["prev_stedi_plan_name"], "").strip()
+    prev_active     = cols.get(SUBSCRIPTION_COL["prev_active"], "").strip()
+
     # Subscription Board items are named "Firstname Lastname" (e.g. "Margaret Purifoy")
     first_name, last_name = _split_name(monday_item.get("name", ""))
 
@@ -98,6 +115,11 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
         "Last Name":             last_name,
         "Patient Date of Birth": dob,
         "Subscription Type":     subscription_type,
+        # Previous-state anchors for Insurance Change? diff
+        "_prev_member_id":       prev_member_id,
+        "_prev_payer_name":      prev_payer_name,
+        "_prev_plan_name":       prev_plan_name,
+        "_prev_active":          prev_active,
         # Identifiers for logging / controlNumber
         "Pulse ID": str(monday_item.get("id", "")),
         "Name":     monday_item.get("name", ""),
@@ -379,6 +401,99 @@ def _compute_prior_auth_required(
     return "No"
 
 
+def _canonical_active(value: str) -> str:
+    """
+    Normalise an "Active?" string to a single canonical vocabulary so we
+    can compare the board's status label (Active / Inactive / Medicare
+    Advantage) against the service layer's computed Sub Stedi Active?
+    (Yes / No / Medicare Advantage).
+
+    Maps to: "Active" / "Inactive" / "Medicare Advantage" / "" (blank).
+    """
+    v = (value or "").strip().casefold()
+    if v in ("yes", "active"):
+        return "Active"
+    if v in ("no", "inactive"):
+        return "Inactive"
+    if v == "medicare advantage":
+        return "Medicare Advantage"
+    return ""
+
+
+def _compute_insurance_change(row: dict, writeback: dict) -> str:
+    """
+    Compare the fresh Stedi writeback against the pre-existing Monday
+    cells (captured by the input extractor under _prev_* keys) and
+    return one of:
+
+      * ""    - first check: ALL prior anchors blank. Caller skips the
+                write so the Insurance Change? cell stays empty.
+      * "No"  - every anchor matched.
+      * "Yes" - at least one anchor differs.
+
+    Anchors (per user spec):
+      - Stedi Member ID
+      - Stedi Payer Name
+      - Stedi Plan Name
+      - Active?  (Active <-> Inactive <-> Medicare Advantage counts)
+
+    Plan Begin Date is intentionally excluded: Medicare-class responses
+    return the *current benefit year* as the plan begin date, which
+    flips every Jan 1 on the same plan and would trigger false "Yes"
+    on benefit-year rollover for every Medicare patient.
+
+    Active? comparison is done on a canonical vocabulary so the board's
+    ("Active" / "Inactive" / "Medicare Advantage") labels match cleanly
+    against the parser's ("Yes" / "No" / "Medicare Advantage") outputs.
+    """
+    def _norm(v: object) -> str:
+        return (str(v) if v is not None else "").strip().casefold()
+
+    # New Active? comes from the Sub Stedi Active? key the orchestration
+    # just wrote (before we call this function). Parser format is
+    # Yes / No / Medicare Advantage.
+    new_active = writeback.get("Sub Stedi Active?", "")
+
+    pairs = [
+        ("member_id",
+         row.get("_prev_member_id", ""),
+         writeback.get("Stedi Member ID", "")),
+        ("payer_name",
+         row.get("_prev_payer_name", ""),
+         writeback.get("Stedi Payer Name", "")),
+        ("plan_name",
+         row.get("_prev_plan_name", ""),
+         writeback.get("Stedi Plan Name", "")),
+        # Active? needs canonicalisation across the two value vocabularies.
+        ("active",
+         _canonical_active(row.get("_prev_active", "")),
+         _canonical_active(new_active)),
+    ]
+
+    # First-check detection: every prior anchor (the old side) is blank.
+    if all(not _norm(old) for _, old, _ in pairs):
+        logger.info(
+            "[SUB-ELG] Insurance Change? — first check "
+            "(all prior anchors blank, skipping write)"
+        )
+        return ""
+
+    diffs = [
+        (name, old, new)
+        for name, old, new in pairs
+        if _norm(old) != _norm(new)
+    ]
+    if diffs:
+        diff_str = "; ".join(
+            f"{name}: {old!r} → {new!r}" for name, old, new in diffs
+        )
+        logger.info(f"[SUB-ELG] Insurance Change? — YES ({diff_str})")
+        return "Yes"
+
+    logger.info("[SUB-ELG] Insurance Change? — No (all anchors match)")
+    return "No"
+
+
 # Sentinel key set on the writeback dict when we couldn't determine coverage
 # and the Subscription flow should flip Run Check -> "Failed" instead of
 # writing any of the 5 Stedi output columns.
@@ -518,18 +633,47 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
         if sub_plan_begin:
             writeback["Stedi Plan Begin Date"] = sub_plan_begin
 
-        # D4. Prior Auth Req? — shared AUTH_RULES lookup per product set
-        # implied by the Subscription Type. Not driven by the Stedi 271
-        # authOrCertIndicator at all; our rule table is the source of truth.
-        writeback["Sub Prior Auth Req?"] = _compute_prior_auth_required(
-            primary_insurance=row["Primary Insurance"],
-            subscription_type=row.get("Subscription Type", ""),
-        )
+        # D4. Insurance Change? — diff fresh Stedi anchors against what
+        # was already on the Monday board from the prior run. Empty
+        # string means "first check" (all prior anchors blank) and the
+        # writer skips the column so the cell stays clean.
+        ins_change = _compute_insurance_change(row, writeback)
+        writeback["Sub Insurance Change?"] = ins_change
+
+        # D5. Prior Auth Req? — only (re)written when Insurance Change?
+        # came back as "Yes".
+        #
+        # Known limitation (TEMPORARY - see Option C backlog):
+        # The AUTH_RULES lookup is keyed by our internal Primary Insurance
+        # label ("Fidelis Commercial", "Horizon BCBS", ...). When
+        # Insurance Change fires, the Primary Insurance column on Monday
+        # almost certainly still shows the OLD insurance - we have no
+        # reliable way to map Stedi's payer.name / planNetworkDescription
+        # back into our label vocabulary yet. Calling the rule table with
+        # the stale Primary Insurance would produce a misleading answer,
+        # so for now we just write "Evaluate" as a signal that billing
+        # needs to manually verify which new carrier the patient has and
+        # decide PA status.
+        #
+        # Option C will build a (Stedi payer, Stedi plan) -> Primary
+        # Insurance classifier. Once that exists, swap this block back
+        # to a _compute_prior_auth_required() call using the MAPPED new
+        # label instead of the (potentially stale) Primary Insurance.
+        #
+        # On first check (ins_change == "") and on no-change
+        # (ins_change == "No"), we skip the PA write entirely so the
+        # existing Monday cell is preserved.
+        if ins_change == "Yes":
+            writeback["Sub Prior Auth Req?"] = "Evaluate"
+        else:
+            # Skip PA write - Monday writer drops blanks.
+            writeback["Sub Prior Auth Req?"] = ""
 
         logger.info(
             f"[SUB-ELG] ✓ Done | item={item_id} "
             f"active={sub_active!r} "
             f"is_ma={is_ma} ma_plan={ma_plan_name!r} "
+            f"ins_change={ins_change!r} "
             f"pa_req={writeback.get('Sub Prior Auth Req?')!r} "
             f"part_b_active={writeback.get('Stedi Part B Active?')!r} "
             f"payer_name={writeback.get('Stedi Payer Name')!r} "
