@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import requests
 from dotenv import load_dotenv
@@ -336,7 +337,7 @@ SUBITEM_ERA_COLUMN_MAP = {
     "Raw Service Date":             ("text_mm1ge9yn",       "text"),    # Raw Service Date (text not date!)
     # ── Amounts ────────────────────────────────────────────────────────────────
     "Primary Paid":                 ("numeric_mm11v6th",    "number"),  # Primary Paid
-    "Raw Line Item Charge Amount":  ("numeric_mm1gg3pj",    "number"),  # Raw Line Item Charge Amount
+    "Raw Line Item Charge Amount":  ("numeric_mm2p7nm9",    "number"),  # Raw Line Item Charge Amount  (user replaced old numeric_mm1gg3pj with this; $ formatted)
     "Raw Allowed Actual":           ("numeric_mm1gtdts",    "number"),  # Raw Allowed Actual
     "Raw Line Item Paid Amount":    ("numeric_mm201t4y",    "number"),  # Raw Line Item Paid Amount
     # ── PR Adjustment Breakdown ────────────────────────────────────────────────
@@ -353,11 +354,17 @@ SUBITEM_ERA_COLUMN_MAP = {
     # ── OA / PI ───────────────────────────────────────────────────────────────
     "Parsed OA Amount":             ("numeric_mm1gh22d",    "number"),  # Parsed OA Amount
     "Parsed PI Amount":             ("numeric_mm1gqkvz",    "number"),  # Parsed PI Amount
-    # ── Code Strings ──────────────────────────────────────────────────────────
-    "Parsed Adjustment Codes":      ("text_mm1gt1dh",       "text"),    # Parsed Adjustment Codes
-    "Parsed CARC Codes":            ("text_mm20ke2s",       "text"),    # Raw CARC Codes
-    "Parsed RARC Codes":            ("text_mm20brp",        "text"),    # Raw RARC Codes
-    "Parsed Remark Codes":          ("text_mm1g6tw3",       "text"),    # Parsed Remark Codes
+    # ── Code Strings (dropdowns) ──────────────────────────────────────────────
+    # These four columns were converted from text to dropdown on the Monday
+    # subitem board so billing can filter / group / color by CARC+RARC codes.
+    # Parser emits "; "-separated strings (e.g. "CO-45; PR-1"); the encoder
+    # below splits on "; " and writes {"labels": [...]} per Monday's dropdown
+    # shape. create_labels_if_missing lets new codes auto-create.
+    "Parsed Adjustment Codes":      ("dropdown_mm2p2pr3",   "dropdown"),  # was text_mm1gt1dh
+    "Parsed CARC Codes":            ("dropdown_mm2pthcy",   "dropdown"),  # was text_mm20ke2s
+    "Parsed RARC Codes":            ("dropdown_mm2pjdcf",   "dropdown"),  # was text_mm20brp
+    "Parsed Remark Codes":          ("dropdown_mm2p9bt6",   "dropdown"),  # was text_mm1g6tw3
+    # ── Long-text prose (unchanged) ───────────────────────────────────────────
     "Parsed Remark Text":           ("long_text_mm1ggyz6",  "long_text"), # Parsed Remark Text
     "Parsed Adjustment Reasons":    ("long_text_mm1g7xmy",  "long_text"), # Parsed Adjustment Reasons
 }
@@ -642,13 +649,24 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
     - Match found → UPDATE existing subitem in place (no new subitem created)
     - No match    → CREATE new subitem named after the HCPC code
     """
+    # We use change_multiple_column_values (with a single-column payload per
+    # call) instead of change_column_value because the multi-variant supports
+    # create_labels_if_missing, which we need for dropdown columns
+    # (Raw CARC / Raw RARC / Parsed Adjustment Codes / Parsed Remark Codes).
+    # Without this flag, the first time a new code comes in from an ERA the
+    # write would fail because the label doesn't exist on the Monday column.
     update_mutation = """
-    mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-      change_column_value(
+    mutation UpdateMulti(
+      $itemId: ID!,
+      $boardId: ID!,
+      $columnValues: JSON!,
+      $createLabels: Boolean!
+    ) {
+      change_multiple_column_values(
         item_id: $itemId,
         board_id: $boardId,
-        column_id: $columnId,
-        value: $value
+        column_values: $columnValues,
+        create_labels_if_missing: $createLabels
       ) { id }
     }
     """
@@ -688,30 +706,61 @@ def populate_era_service_line_subitems(claims_item_id: str, children: list) -> N
                     continue
                 logger.info(f"Created new subitem name={item_name!r} → id={subitem_id}")
 
-            # Write all ERA fields into the subitem using SUBITEM_ERA_COLUMN_MAP
+            # Build a single {column_id: shape} payload for this subitem so we
+            # can fire one change_multiple_column_values call. Each column type
+            # has its own shape (see Monday docs); unknown types fall through
+            # to the text-style "quoted string" form.
+            col_values: dict = {}
             for field_name, (col_id, col_type) in SUBITEM_ERA_COLUMN_MAP.items():
                 value = child.get(field_name)
                 if value is None or value == "":
                     continue
                 try:
                     if col_type == "number":
-                        formatted = str(value)
+                        col_values[col_id] = str(value)
                     elif col_type == "date":
-                        formatted = '{"date": "' + str(value) + '"}'
+                        col_values[col_id] = {"date": str(value)}
                     elif col_type == "long_text":
-                        formatted = '{"text": "' + str(value).replace('"', "'") + '"}'
-                    else:
-                        formatted = f'"{str(value)}"'
-
-                    run_query(update_mutation, {
-                        "itemId": str(subitem_id),
-                        "boardId": str(subitem_board_id),
-                        "columnId": col_id,
-                        "value": formatted,
-                    })
-                    logger.info(f"  Subitem name={item_name!r}: {field_name} = {value}")
+                        col_values[col_id] = {"text": str(value)}
+                    elif col_type == "dropdown":
+                        # Parser joins multiple codes with "; " (e.g. "CO-45; PR-1").
+                        # Split back into a labels array; trim blanks.
+                        raw = str(value)
+                        labels = [
+                            lbl.strip()
+                            for lbl in raw.split(";")
+                            if lbl.strip()
+                        ]
+                        if labels:
+                            col_values[col_id] = {"labels": labels}
+                    elif col_type == "status":
+                        col_values[col_id] = {"label": str(value)}
+                    else:  # plain text
+                        col_values[col_id] = str(value)
                 except Exception as e:
-                    logger.warning(f"  Subitem name={item_name!r}: failed {field_name}: {e}")
+                    logger.warning(
+                        f"  Subitem name={item_name!r}: failed to encode {field_name}: {e}"
+                    )
+
+            if not col_values:
+                logger.info(f"  Subitem name={item_name!r}: nothing to write")
+                continue
+
+            try:
+                run_query(update_mutation, {
+                    "itemId":       str(subitem_id),
+                    "boardId":      str(subitem_board_id),
+                    "columnValues": json.dumps(col_values),
+                    "createLabels": True,
+                })
+                logger.info(
+                    f"  Subitem name={item_name!r}: wrote {len(col_values)} col(s) "
+                    f"keys={sorted(col_values.keys())}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"  Subitem name={item_name!r}: multi-column write failed: {e}"
+                )
 
         except Exception as e:
             logger.warning(f"Failed to process subitem name={item_name!r}: {e}")
