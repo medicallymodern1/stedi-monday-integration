@@ -83,7 +83,16 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     values are included — blanks are dropped so we never overwrite existing
     Monday data with empty strings.
     """
-    active_yn  = (writeback.get("Stedi Part B Active?") or "").strip()
+    # Prefer the Subscription-specific active flag (computed in
+    # subscription_eligibility_service._compute_subscription_active). Fall
+    # back to the Medicare-centric Stedi Part B Active? only if the new
+    # key is absent, so callers that build a writeback dict by hand (tests,
+    # one-off scripts) keep working.
+    active_yn  = (
+        writeback.get("Sub Stedi Active?")
+        or writeback.get("Stedi Part B Active?")
+        or ""
+    ).strip()
     plan_begin = (writeback.get("Stedi Plan Begin Date") or "").strip()
     payer_name = (writeback.get("Stedi Payer Name") or "").strip()
     plan_name  = (writeback.get("Stedi Plan Name") or "").strip()

@@ -136,6 +136,38 @@ def _resolve_subscription_payer(primary_insurance: str) -> tuple[str, str]:
 # C + D. ORCHESTRATION
 # =============================================================================
 
+
+def _compute_subscription_active(raw_response: dict) -> str:
+    """
+    Compute the Subscription Board "Active?" flag from the raw Stedi response.
+
+    The Intake parser's ``_parse_part_b_active`` is Medicare-specific — it
+    requires service type 12 (DME) with active-coverage signals. Commercial
+    plans (e.g. Anthem PPO) don't surface anything under service type 12
+    even when the member is actively covered for the plan as a whole, so
+    that parser returns "No" for a fully active commercial member.
+
+    For the Subscription Board we want a broader "is this plan active?"
+    signal, which maps cleanly to the X12 271 "Active Coverage" markers:
+
+      - ``planStatus[*].statusCode == "1"``   (EB*1 on the plan overall), OR
+      - ``benefitsInformation[*].code == "1"``  (any Active Coverage line).
+
+    If we don't see either, call it Inactive.
+    """
+    plan_status = raw_response.get("planStatus") or []
+    for ps in plan_status:
+        if str(ps.get("statusCode", "")).strip() == "1":
+            return "Yes"
+
+    benefits = raw_response.get("benefitsInformation") or []
+    for b in benefits:
+        if str(b.get("code", "")).strip() == "1":
+            return "Yes"
+
+    return "No"
+
+
 def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
     """
     Full pipeline: Subscription Board item -> eligibility writeback dict.
@@ -182,9 +214,18 @@ def run_subscription_eligibility_check(monday_item: dict) -> dict[str, Any]:
 
         # D. Parse response -> full writeback dict (same parser as Intake flow)
         writeback = parse_eligibility_response(raw_response)
+
+        # D2. Override Active? with a Subscription-specific flag.
+        # The Intake parser's Part B Active is Medicare-specific (service
+        # type 12 required). For the Subscription Board we want a broader
+        # "is this plan active overall?" check derived from planStatus /
+        # benefitsInformation code 1.
+        sub_active = _compute_subscription_active(raw_response)
+        writeback["Sub Stedi Active?"] = sub_active
         logger.info(
             f"[SUB-ELG] ✓ Done | item={item_id} "
-            f"active={writeback.get('Stedi Part B Active?')!r} "
+            f"active={sub_active!r} "
+            f"part_b_active={writeback.get('Stedi Part B Active?')!r} "
             f"payer_name={writeback.get('Stedi Payer Name')!r} "
             f"plan_name={writeback.get('Stedi Plan Name')!r}"
         )
