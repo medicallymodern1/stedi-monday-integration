@@ -99,3 +99,87 @@ async def test_era_parse(body: EraTestBody):
     era_json = body.dict()
     result = parse_era_json(era_json)
     summary = summarize_era_row_for_monday(result)
+
+    return {"parsed": True, "summary": summary}
+
+
+# ─── Reprocess ERA endpoint ───────────────────────────────────────────────────
+# Accepts a raw X12-typed Stedi 835 JSON body (the kind you can copy-paste out
+# of Stedi's dashboard or logs) and runs it through the exact same parse +
+# PCN-match + populate_era_data_on_claims_item pipeline that handle_835_event
+# runs when a real webhook fires. Use to replay ERAs that didn't land the
+# first time because of parser/writer bugs now fixed.
+from fastapi import Request
+
+@app.post("/test/reprocess-era", tags=["Testing"])
+async def reprocess_era_json(request: Request):
+    """
+    POST the raw 835 ERA JSON as the request body. We'll parse it, find the
+    matching Claims Board item by Patient Control Number (PCN), and populate
+    the parent + subitem columns.
+
+    Returns a summary per claim:
+      {"pcn": "...", "status": "written" | "no_match_found" | "parse_empty",
+       "claims_item_id": "..." | None}
+    """
+    # Accept raw JSON body (not a typed pydantic model, so we don't have to
+    # pre-declare every X12 suffix). The body comes in as bytes.
+    raw = await request.body()
+    if not raw:
+        return {"status": "error", "message": "empty body"}
+
+    try:
+        era_content = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        return {"status": "error", "message": f"body is not UTF-8: {e}"}
+
+    # Lazy imports so module startup cost is unaffected.
+    from services.era_parser_service import (
+        parse_era_from_string,
+        summarize_era_row_for_monday,
+    )
+    from services.monday_service import populate_era_data_on_claims_item
+    from routes.stedi_webhook import _find_claims_item_by_pcn
+
+    era_rows = parse_era_from_string(era_content)
+    if not era_rows:
+        return {
+            "status": "parse_empty",
+            "message": "parser returned 0 rows — check format",
+        }
+
+    results = []
+    for row in era_rows:
+        parent = row.get("parent", {}) or {}
+        pcn = parent.get("raw_patient_control_num", "") or ""
+
+        claims_item_id = _find_claims_item_by_pcn(pcn) if pcn else ""
+        if not claims_item_id:
+            results.append({
+                "pcn": pcn,
+                "status": "no_match_found",
+                "claims_item_id": None,
+                "paid": parent.get("primary_paid"),
+            })
+            continue
+
+        try:
+            summary = summarize_era_row_for_monday(row)
+            populate_era_data_on_claims_item(claims_item_id, summary)
+            results.append({
+                "pcn": pcn,
+                "status": "written",
+                "claims_item_id": claims_item_id,
+                "paid": parent.get("primary_paid"),
+                "carc_sample": [c.get("Parsed CARC Codes", "") for c in row.get("children", [])],
+                "rarc_sample": [c.get("Parsed RARC Codes", "") for c in row.get("children", [])],
+            })
+        except Exception as e:
+            results.append({
+                "pcn": pcn,
+                "status": "error",
+                "claims_item_id": claims_item_id,
+                "error": str(e),
+            })
+
+    return {"status": "ok", "claims_parsed": len(era_rows), "results": results}
