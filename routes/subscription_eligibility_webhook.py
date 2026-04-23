@@ -38,6 +38,7 @@ from services.subscription_eligibility_monday_service import (
     run_and_write_subscription_eligibility,
     SUBSCRIPTION_BOARD_ID,
 )
+from services.eligibility_worker_pool import submit as pool_submit, pool_stats
 from services.subscription_eligibility_service import (
     run_subscription_eligibility_check,
     extract_subscription_eligibility_inputs,
@@ -79,6 +80,30 @@ def fetch_subscription_item(item_id: str) -> dict:
     if not items:
         raise ValueError(f"Item {item_id} not found on Subscription Board")
     return items[0]
+
+
+# =============================================================================
+# BACKGROUND WORKER — runs the full pipeline off the event loop
+# =============================================================================
+
+def _process_subscription_job(item_id: str) -> None:
+    """
+    Fetch the Monday item, run eligibility, write back. Runs in the
+    eligibility worker-pool thread — NEVER raises; all errors logged.
+    """
+    try:
+        monday_item = fetch_subscription_item(item_id)
+        writeback   = run_and_write_subscription_eligibility(item_id, monday_item)
+        logger.info(
+            f"[SUB-ELG-WEBHOOK] ✓ Complete | item={item_id} "
+            f"active={writeback.get('Sub Stedi Active?')!r} "
+            f"payer={writeback.get('Stedi Payer Name')!r}"
+        )
+    except Exception as e:
+        logger.error(
+            f"[SUB-ELG-WEBHOOK] ✗ Worker error | item={item_id}: {e}",
+            exc_info=True,
+        )
 
 
 # =============================================================================
@@ -135,21 +160,13 @@ async def subscription_eligibility_trigger(request: Request) -> JSONResponse:
         logger.warning("[SUB-ELG-WEBHOOK] No item_id in event — skipping")
         return _ack()
 
-    # Run pipeline (ACK already queued via return below)
-    try:
-        monday_item = fetch_subscription_item(item_id)
-        writeback   = run_and_write_subscription_eligibility(item_id, monday_item)
-        logger.info(
-            f"[SUB-ELG-WEBHOOK] ✓ Complete | item={item_id} "
-            f"active={writeback.get('Stedi Part B Active?')!r} "
-            f"payer={writeback.get('Stedi Payer Name')!r}"
-        )
-    except Exception as e:
-        logger.error(
-            f"[SUB-ELG-WEBHOOK] ✗ Error | item={item_id}: {e}",
-            exc_info=True,
-        )
-
+    # Enqueue the job and ACK instantly (within Monday's 5s window).
+    # The pool runs up to ELIGIBILITY_POOL_MAX_WORKERS jobs concurrently,
+    # bounded by STEDI_MAX_CONCURRENT at the HTTP layer.
+    pool_submit(_process_subscription_job, item_id)
+    logger.info(
+        f"[SUB-ELG-WEBHOOK] Queued | item={item_id} pool={pool_stats()}"
+    )
     return _ack()
 
 

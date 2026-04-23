@@ -294,6 +294,7 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID = {
     "SB890": "BlueCross BlueShield of Tennessee",
     "BCBSF": "Florida Blue",
     "53767": "Blue Cross Blue Shield of Wyoming",
+    "16013": "Medicare Part B",
     "STEDITEST": "Stedi Test Payer",
 }
 

@@ -16,9 +16,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import requests
+
+# Concurrency semaphore lives in the worker pool module so the webhook
+# route and this HTTP client share one bound (default 5, matches Stedi's
+# default account cap). Import is delayed until we actually need it so
+# this module is still usable outside a FastAPI process (e.g. test
+# scripts) without spinning up the worker pool.
+try:
+    from services.eligibility_worker_pool import stedi_concurrency
+except Exception:  # pragma: no cover — fallback for standalone imports
+    import threading
+    stedi_concurrency = threading.BoundedSemaphore(int(os.getenv('STEDI_MAX_CONCURRENT', '5')))
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +81,46 @@ def send_eligibility_request(
         f"partner={meta.get('tradingPartnerName')!r}"
     )
 
-    try:
-        response = requests.post(
-            STEDI_ELIGIBILITY_URL,
-            headers=headers,
-            json=send_payload,
-            timeout=timeout,
+    # Stedi's default account cap is 5 concurrent in-flight eligibility calls.
+    # The semaphore bounds us across all threads in this process so a batch
+    # of 100 webhooks queues gracefully instead of hitting 429s. We also
+    # handle 429 defensively with exponential backoff in case our local cap
+    # is looser than Stedi's actual cap.
+    response = None
+    for attempt in range(4):
+        try:
+            with stedi_concurrency:
+                response = requests.post(
+                    STEDI_ELIGIBILITY_URL,
+                    headers=headers,
+                    json=send_payload,
+                    timeout=timeout,
+                )
+        except requests.exceptions.Timeout:
+            raise ValueError(f"Stedi eligibility request timed out after {timeout}s")
+        except requests.exceptions.ConnectionError as e:
+            raise ValueError(f"Stedi eligibility connection error: {e}")
+
+        if response.status_code != 429:
+            break
+
+        retry_after = response.headers.get("Retry-After")
+        try:
+            sleep_s = float(retry_after) if retry_after else (2 ** attempt)
+        except ValueError:
+            sleep_s = 2 ** attempt
+        logger.warning(
+            f"[ELG-CLIENT] 429 from Stedi | payer={payload.get('tradingPartnerServiceId')} "
+            f"attempt={attempt + 1}/4 sleep={sleep_s}s"
         )
-    except requests.exceptions.Timeout:
-        raise ValueError(f"Stedi eligibility request timed out after {timeout}s")
-    except requests.exceptions.ConnectionError as e:
-        raise ValueError(f"Stedi eligibility connection error: {e}")
+        time.sleep(sleep_s)
+    else:
+        # Exhausted retries — surface the last 429 as a ValueError
+        raise ValueError(
+            "Stedi rate-limited the request (HTTP 429) after 4 attempts. "
+            "Consider lowering STEDI_MAX_CONCURRENT or asking Stedi support "
+            "to raise your account concurrency cap."
+        )
 
     try:
         response_json = response.json()
