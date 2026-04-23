@@ -197,9 +197,13 @@ async def reprocess_era_json(request: Request, background_tasks: BackgroundTasks
             "paid": parent.get("primary_paid"),
             "lines": [
                 {
-                    "hcpc": c.get("HCPC Code", ""),
-                    "carc": c.get("Parsed CARC Codes", ""),
-                    "rarc": c.get("Parsed RARC Codes", ""),
+                    "hcpc":          c.get("HCPC Code", ""),
+                    "carc":          c.get("Parsed CARC Codes", ""),
+                    "rarc":          c.get("Parsed RARC Codes", ""),
+                    "adj_codes":     c.get("Parsed Adjustment Codes", ""),
+                    "adj_reasons":   c.get("Parsed Adjustment Reasons", ""),
+                    "remark_text":   c.get("Parsed Remark Text", ""),
+                    "allowed":       c.get("Raw Allowed Actual"),
                 }
                 for c in row.get("children", [])
             ],
