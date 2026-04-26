@@ -23,13 +23,26 @@ from stedi_claim_status_parser import (  # noqa: E402
 
 
 def _fake_claim(category: str, code: str, *, paid: float = 0.0,
-                icn: str = "", description: str = "") -> dict:
+                icn: str = "", description: str = "",
+                cat_text: str = "", code_text: str = "") -> dict:
+    """
+    Build a minimal 277 claim envelope. Mirrors Stedi's real shape:
+    money + ICN live INSIDE claimStatus (not at the outer level), and
+    descriptive text uses statusCategoryCodeValue / statusCodeValue.
+    The outer fallback fields are still populated so tests cover the
+    legacy probe path in the parser too.
+    """
     return {
         "claimStatus": {
-            "statusCategoryCode": category,
-            "statusCode":         code,
-            "statusDescription":  description,
+            "statusCategoryCode":      category,
+            "statusCategoryCodeValue": cat_text,
+            "statusCode":              code,
+            "statusCodeValue":         code_text,
+            "statusDescription":       description,
+            "amountPaid":              str(paid),
+            "tradingPartnerClaimNumber": icn,
         },
+        # Legacy/outer-level fields kept to confirm the fallback chain.
         "claimControlNumber":  icn,
         "claimPaymentAmount":  paid,
     }
@@ -64,31 +77,37 @@ def test_category_code_to_label():
 
 def test_parse_paid_claim():
     raw = {"claims": [_fake_claim(
-        "F", "1",
+        "F1", "65",
         paid=1284.00,
         icn="ABC123",
-        description="Paid as billed",
+        cat_text="Finalized/Payment - The claim/line has been paid.",
+        code_text="Claim/line has been paid.",
     )]}
     out = parse_claim_status_response(raw)
     assert out["Claim Status Category"] == "Paid"
     assert out["277 Paid Amount"]       == 1284.00
     assert out["277 ICN"]               == "ABC123"
-    assert "F1"          in out["Claim Status Detail"]
-    assert "Paid"        in out["Claim Status Detail"]
+    # Rich detail format: "[F1] Finalized/Payment - ... · [65] Claim/line has been paid."
+    assert "[F1]"         in out["Claim Status Detail"]
+    assert "[65]"         in out["Claim Status Detail"]
+    assert "Finalized/Payment" in out["Claim Status Detail"]
+    assert "has been paid"     in out["Claim Status Detail"]
     assert out["_n_claims_returned"]    == 1
 
 
 def test_parse_denied_claim():
     raw = {"claims": [_fake_claim(
-        "F", "2",
+        "F2", "65",
         paid=0.0,
         icn="DENY-9",
-        description="Claim lacks information",
+        cat_text="Finalized/Denial - The claim/line has been denied.",
+        code_text="Claim/line lacks information.",
     )]}
     out = parse_claim_status_response(raw)
     assert out["Claim Status Category"] == "Denied"
     assert out["277 Paid Amount"] == 0.0
     assert out["277 ICN"] == "DENY-9"
+    assert "Finalized/Denial" in out["Claim Status Detail"]
 
 
 def test_parse_no_claims_returned():
@@ -107,12 +126,11 @@ def test_parse_stedi_error_body():
 
 def test_multiple_claims_picks_highest_priority():
     raw = {"claims": [
-        _fake_claim("A", "20", icn="OLD1",  description="Received"),
-        _fake_claim("F", "1",  paid=500.0, icn="PAID1", description="Paid"),
-        _fake_claim("P", "0",  icn="PEND1", description="Pending"),
+        _fake_claim("A1", "20", icn="OLD1",  cat_text="Acknowledgement"),
+        _fake_claim("F1", "65", paid=500.0, icn="PAID1", cat_text="Finalized/Payment"),
+        _fake_claim("P0", "247",icn="PEND1", cat_text="Pending"),
     ]}
     out = parse_claim_status_response(raw)
-    # Paid has the highest priority
     assert out["Claim Status Category"] == "Paid"
     assert out["277 ICN"]               == "PAID1"
     assert out["277 Paid Amount"]       == 500.0
@@ -123,7 +141,8 @@ def test_nested_claims_under_provider_level():
     raw = {
         "informationReceiverLevel": {
             "providerLevel": {
-                "claims": [_fake_claim("P", "0", icn="NESTED1")]
+                "claims": [_fake_claim("P1", "247", icn="NESTED1",
+                                       cat_text="Pending/In Process")]
             }
         }
     }
@@ -139,6 +158,38 @@ def test_error_writeback():
     assert out["277 Paid Amount"] == 0.0
 
 
+
+def test_parse_real_anthem_response_shape():
+    """Regression: actual Stedi 277 for Anthem (Seven Hanley-Creary)."""
+    raw = {
+        "claims": [{
+            "claimStatus": {
+                "amountPaid": "1125",
+                "checkIssueDate": "2026-04-21",
+                "checkNumber": "7706295087",
+                "claimServiceDate": "20260407-20260407",
+                "effectiveDate": "2026-04-11",
+                "paidDate": "2026-04-11",
+                "patientAccountNumber": "4O89ZYUC76T8IOINZ",
+                "statusCategoryCode": "F1",
+                "statusCategoryCodeValue": "Finalized/Payment - The claim/line has been paid.",
+                "statusCode": "65",
+                "statusCodeValue": "Claim/line has been paid.",
+                "submittedAmount": "1125",
+                "trackingNumber": "01KQ5CASRCN0XCCDX997JQ067C",
+                "tradingPartnerClaimNumber": "2026100ET8632",
+            }
+        }],
+    }
+    out = parse_claim_status_response(raw)
+    assert out["Claim Status Category"] == "Paid"
+    assert out["277 Paid Amount"]       == 1125.0
+    assert out["277 ICN"]               == "2026100ET8632"
+    assert "Finalized/Payment"          in out["Claim Status Detail"]
+    assert "has been paid"              in out["Claim Status Detail"]
+    assert out["_check_number"]         == "7706295087"
+    assert out["_paid_date"]            == "2026-04-11"
+
 if __name__ == "__main__":
     test_category_code_to_label()
     test_parse_paid_claim()
@@ -148,4 +199,5 @@ if __name__ == "__main__":
     test_multiple_claims_picks_highest_priority()
     test_nested_claims_under_provider_level()
     test_error_writeback()
+    test_parse_real_anthem_response_shape()
     print("all parser tests passed")

@@ -97,25 +97,34 @@ def _format_activity_line(writeback: dict[str, Any]) -> str:
     Build a single-line audit entry for the Notes & Activity column.
 
     Shape (kept short enough to stay readable in the long_text preview):
-        [YYYY-MM-DD HH:MM] 277 via Stedi: <Category> (<cat><code>) — $<paid> · ICN <icn>
+        [YYYY-MM-DD HH:MM] 277 via Stedi: <Category> (<cat><code>) — $<paid> · ICN <icn> · check <#> on <YYYY-MM-DD>
     """
     ts   = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     cat  = writeback.get("Claim Status Category") or ""
     code = f"{writeback.get('_category_code', '')}{writeback.get('_status_code', '')}".strip()
     paid = writeback.get("277 Paid Amount") or 0.0
     icn  = writeback.get("277 ICN") or ""
+    check_no  = writeback.get("_check_number") or ""
+    paid_date = writeback.get("_paid_date") or ""
 
     try:
         paid_txt = f"${float(paid):,.2f}"
     except (TypeError, ValueError):
         paid_txt = f"${paid}"
 
-    parts = [f"[{ts}] 277 via Stedi: {cat}"]
+    head = f"[{ts}] 277 via Stedi: {cat}"
     if code:
-        parts[-1] += f" ({code})"
-    parts.append(paid_txt)
+        head += f" ({code})"
+
+    parts = [head, paid_txt]
     if icn:
         parts.append(f"ICN {icn}")
+    if check_no and paid_date:
+        parts.append(f"check {check_no} on {paid_date}")
+    elif check_no:
+        parts.append(f"check {check_no}")
+    elif paid_date:
+        parts.append(f"paid {paid_date}")
     return " \u00b7 ".join(parts)
 
 
@@ -173,8 +182,11 @@ def _encode_claim_status_columns(
     if icn:
         values[CLAIM_STATUS_OUTPUT_COL["icn"]] = icn
 
+    # Always write the paid amount (even $0). For a Paid response a
+    # blank cell is misleading, and for a Denied response $0 IS the
+    # answer. Only skip when the value isn't numerically coercible.
     try:
-        if paid is not None and float(paid) != 0.0:
+        if paid is not None:
             values[CLAIM_STATUS_OUTPUT_COL["paid_amount"]] = str(float(paid))
     except (TypeError, ValueError):
         pass
