@@ -210,5 +210,13 @@ def build_claim_status_payload(
         f"dos_window={begin}..{end} | "
         f"pcn={pcn!r} charge={raw_amt!r}"
     )
+    # And dump the actual JSON we are about to send so we can verify
+    # the exact request shape from Railway logs alone, no separate
+    # test endpoint round-trip needed.
+    import json as _json
+    _send = {k: v for k, v in payload.items() if k != "_meta"}
+    logger.info(
+        f"[CS-BUILDER] Sending body: {_json.dumps(_send, default=str)[:1500]}"
+    )
 
     return payload
