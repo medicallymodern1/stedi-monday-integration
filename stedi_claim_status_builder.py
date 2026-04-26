@@ -154,6 +154,26 @@ def build_claim_status_payload(
         or member_id
     )[:80]
 
+    encounter: dict[str, Any] = {
+        "beginningDateOfService": begin,
+        "endDateOfService":       end,
+    }
+    # Optional pinpoint fields — payers use these to disambiguate when
+    # multiple claims share the same DOS window. Cigna returns E0/21
+    # ("missing or invalid information") on 276s that don't include
+    # at least the patient control number, so we always send it when
+    # we have one.
+    pcn = _safe_str(row.get("Patient Control Number"))
+    if pcn:
+        encounter["patientControlNumber"] = pcn[:38]  # X12 max for REF*EJ
+
+    raw_amt = _safe_str(row.get("Claim Charge Amount"))
+    if raw_amt:
+        try:
+            encounter["totalAmount"] = float(raw_amt.replace("$", "").replace(",", ""))
+        except ValueError:
+            pass  # silently skip — non-fatal
+
     payload: dict[str, Any] = {
         "controlNumber":          control_number,
         "tradingPartnerServiceId": payer_id,
@@ -171,16 +191,15 @@ def build_claim_status_payload(
             "lastName":    _safe_str(row["Last Name"]),
             "dateOfBirth": dob,
         },
-        "encounter": {
-            "beginningDateOfService": begin,
-            "endDateOfService":       end,
-        },
+        "encounter": encounter,
         "_meta": {
             "generalInsurance":   general_insurance,
             "tradingPartnerName": partner_name,
             "pulseId":            _safe_str(row.get("Pulse ID")),
             "itemName":           _safe_str(row.get("Name")),
             "dosWindow":          f"{begin}..{end}",
+            "patientControlNumber": pcn,
+            "claimChargeAmount":  raw_amt,
         },
     }
 
@@ -188,7 +207,8 @@ def build_claim_status_payload(
         f"[CS-BUILDER] Payload ready | "
         f"general_insurance={general_insurance!r} -> payer_id={payer_id} | "
         f"partner={partner_name!r} | member_id={member_id!r} | "
-        f"dos_window={begin}..{end}"
+        f"dos_window={begin}..{end} | "
+        f"pcn={pcn!r} charge={raw_amt!r}"
     )
 
     return payload

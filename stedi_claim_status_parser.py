@@ -41,40 +41,52 @@ def _category_to_monday_label(category: str, status_code: str) -> str:
     """
     Map (statusCategoryCode, statusCode) to a Monday label.
 
-    - F1: Paid
-    - F2, F4: Denied
-    - F3: In Process (revised/adjusting)
-    - F0 (bare Finalized): fall through on amount if we later want to split
-    - P*: Pending
-    - A*: Acknowledged
-    - R*: Requests Info
-    - E*: Error
+    Stedi returns the X12 STC01-1 ``statusCategoryCode`` as a 2-char
+    value (letter + digit), e.g. "F0", "F1", "F2", "F3", "F4", "A1", "A2",
+    "A3", "P1", "P3", "R0", "E0" - NOT the bare letter. We key off
+    the FIRST character for the broad bucket and use the second
+    character (or the separate ``statusCode``) for the F-subcategory
+    split that matters most for the Monday board (Paid vs Denied vs
+    In Process).
+
+      F0 plain Finalized                 → In Process
+      F1 Finalized/Payment               → Paid
+      F2 Finalized/Denial                → Denied
+      F3 Finalized/Revised               → In Process
+      F4 Finalized/Adjudication-no-pay   → Denied
+      P* Pending                         → Pending
+      A* Acknowledgement                 → Acknowledged
+      R* Requests for additional info    → Requests Info
+      E* System / processing error       → Error
+      anything else (incl. blanks)       → No Match
     """
     cat  = (category or "").strip().upper()
-    code = (status_code or "").strip()
+    code = (status_code or "").strip().upper()
+    head = cat[:1]                              # broad bucket letter
+    sub  = cat[1:2] if len(cat) > 1 else ""     # F-subcat for category-encoded values
 
-    if cat == "F":
-        subcat = (code or "0")[:1].upper() if code else "0"
-        # Many payers return the F-subcode embedded in status_code itself
-        # as a 2-char value like "F1" or "F2"; handle that case too.
-        if code.upper().startswith("F") and len(code) >= 2:
-            subcat = code[1]
-        if subcat == "1":
+    if head == "F":
+        # Subcat may live in either char-2 of the category ("F1") or as a
+        # separate statusCode (some payers split them differently).
+        f_sub = sub or code[:1]
+        if code.startswith("F") and len(code) >= 2:
+            f_sub = code[1]
+        if f_sub == "1":
             return "Paid"
-        if subcat in ("2", "4"):
+        if f_sub in ("2", "4"):
             return "Denied"
-        if subcat == "3":
+        if f_sub == "3":
             return "In Process"
         # F0 / unknown F-subcode — treat as In Process so billing still sees activity
         return "In Process"
 
-    if cat == "P":
+    if head == "P":
         return "Pending"
-    if cat == "A":
+    if head == "A":
         return "Acknowledged"
-    if cat == "R":
+    if head == "R":
         return "Requests Info"
-    if cat == "E":
+    if head == "E":
         return "Error"
     return "No Match"
 
@@ -254,6 +266,16 @@ def parse_claim_status_response(raw: dict[str, Any]) -> dict[str, Any]:
         f"[CS-PARSER] claims={len(claims)} label={label!r} "
         f"cat={cat!r} code={code!r} paid={paid} icn={icn!r}"
     )
+    if label in ("Error", "No Match") or not icn:
+        # Surface the raw response so we can see exactly what Stedi/payer
+        # said. Truncate so logs don't blow up; full response is usually
+        # under 4 KB anyway.
+        import json as _json
+        try:
+            raw_excerpt = _json.dumps(raw, default=str)[:2000]
+        except Exception:
+            raw_excerpt = repr(raw)[:2000]
+        logger.warning(f"[CS-PARSER] RAW 277 (excerpt): {raw_excerpt}")
     return writeback
 
 

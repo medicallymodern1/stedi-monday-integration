@@ -49,6 +49,12 @@ CLAIMS_BOARD_INPUT_COL = {
     "insurance_type":     "color_mkxmmm77",   # status (Commercial/Medicare/Medicaid)
     "dos":                "date_mkwr7spz",
     "pr_payor_id":        "text_mm1gcz3y",    # text (optional)
+    # Optional claim-pinpoint fields. Sending these tightens the payer's
+    # match — Cigna in particular returns "missing or invalid information"
+    # (E0/21) on a 276 that lacks a patient control number.
+    "patient_control_number": "text_mm1gkf40",   # "Raw Patient Control Number"
+    "claim_id_alt":           "text_mm1zpzrs",   # "Claim ID" — fallback PCN source
+    "claim_charge_amount":    "numeric_mm1ghydj",# "Raw Claim Charge Amount"
 }
 
 CLAIM_STATUS_FAILED_FLAG = "_claim_status_failed"
@@ -74,6 +80,11 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
     dob            = cols.get(CLAIMS_BOARD_INPUT_COL["dob"], "").strip()
     dos            = cols.get(CLAIMS_BOARD_INPUT_COL["dos"], "").strip()
     pr_payor_id    = cols.get(CLAIMS_BOARD_INPUT_COL["pr_payor_id"], "").strip()
+    pcn            = (
+        cols.get(CLAIMS_BOARD_INPUT_COL["patient_control_number"], "").strip()
+        or cols.get(CLAIMS_BOARD_INPUT_COL["claim_id_alt"], "").strip()
+    )
+    claim_amount   = cols.get(CLAIMS_BOARD_INPUT_COL["claim_charge_amount"], "").strip()
 
     first_name, last_name = _split_name(monday_item.get("name", ""))
 
@@ -93,6 +104,10 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         "Name":                  monday_item.get("name", ""),
         # Pass-through for the service-level payer override.
         "_pr_payor_id":          pr_payor_id,
+        # Optional 276 fields — payers often need these to pinpoint
+        # the right claim record (Cigna especially).
+        "Patient Control Number": pcn,
+        "Claim Charge Amount":    claim_amount,
     }
 
     logger.debug(
@@ -100,7 +115,8 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         f"insurance_type={insurance_type!r} "
         f"member_id={member_id!r} dob={dob!r} dos={dos!r} "
         f"first={first_name!r} last={last_name!r} "
-        f"pr_payor_id={pr_payor_id!r}"
+        f"pr_payor_id={pr_payor_id!r} pcn={pcn!r} "
+        f"claim_amount={claim_amount!r}"
     )
 
     return row

@@ -36,6 +36,7 @@ def _fake_claim(category: str, code: str, *, paid: float = 0.0,
 
 
 def test_category_code_to_label():
+    # Single-letter category (legacy/X12-stripped)
     assert _category_to_monday_label("F", "1") == "Paid"
     assert _category_to_monday_label("F", "F1") == "Paid"
     assert _category_to_monday_label("F", "2") == "Denied"
@@ -47,6 +48,18 @@ def test_category_code_to_label():
     assert _category_to_monday_label("R", "0") == "Requests Info"
     assert _category_to_monday_label("E", "0") == "Error"
     assert _category_to_monday_label("", "") == "No Match"
+    # 2-char X12 category codes (the format Stedi actually returns)
+    assert _category_to_monday_label("F0", "")  == "In Process"
+    assert _category_to_monday_label("F1", "")  == "Paid"
+    assert _category_to_monday_label("F2", "")  == "Denied"
+    assert _category_to_monday_label("F3", "")  == "In Process"
+    assert _category_to_monday_label("F4", "")  == "Denied"
+    assert _category_to_monday_label("A1", "20") == "Acknowledged"
+    assert _category_to_monday_label("P1", "0")  == "Pending"
+    assert _category_to_monday_label("R0", "0")  == "Requests Info"
+    assert _category_to_monday_label("E0", "21") == "Error"
+    # Lowercase category should still work
+    assert _category_to_monday_label("e0", "21") == "Error"
 
 
 def test_parse_paid_claim():
