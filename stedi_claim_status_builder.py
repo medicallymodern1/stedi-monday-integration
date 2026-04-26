@@ -121,6 +121,7 @@ def build_claim_status_payload(
     *,
     payer_id: str | None = None,
     partner_name: str | None = None,
+    fallback_mode: bool = False,
 ) -> dict[str, Any]:
     """
     Validate inputs and return a Stedi-compatible 276 claim-status payload.
@@ -170,18 +171,22 @@ def build_claim_status_payload(
 
     # Per Stedi's "Check claim status" guide, the recommended base
     # request is intentionally minimal — sending too much narrows the
-    # search and causes false no-matches. Only NPI / organizationName /
-    # providerType for providers; subscriber memberId / firstName /
-    # lastName / dateOfBirth (+ gender when known); encounter date
-    # range only. taxId, patientControlNumber, totalAmount, and the
-    # tradingPartnerClaimNumber are documented as fallback fields to
-    # add in a SECOND attempt only if the base request returns no
-    # data — wiring that retry chain is a follow-up; for now we just
-    # send the recommended base.
+    # search and causes false no-matches.
+    #
+    # Fallback mode adds Stedi's documented "if base returns no data,
+    # try these" fields:
+    #   - encounter.tradingPartnerClaimNumber  (the payer's claim ID/ICN)
+    #   - providers[0].taxId                   (billing provider TIN/EIN)
+    # See ``fallback_mode`` parameter; the orchestrator flips it after
+    # a D0 ("Data Search Unsuccessful") response from the base call.
     encounter: dict[str, Any] = {
         "beginningDateOfService": begin,
         "endDateOfService":       end,
     }
+    if fallback_mode:
+        tp_claim_num = _safe_str(row.get("Tradingpartner Claim Number"))
+        if tp_claim_num:
+            encounter["tradingPartnerClaimNumber"] = tp_claim_num[:50]
 
     # Subscriber gender is recommended in the docs and improves match
     # rate. Read from the row when the caller passed it; otherwise omit.
@@ -224,11 +229,14 @@ def build_claim_status_payload(
     payload: dict[str, Any] = {
         "tradingPartnerServiceId": payer_id,
         "providers": [
-            {
+            (lambda _b: (
+                {**_b, "taxId": BILLING_PROVIDER_EIN}
+                if fallback_mode else _b
+            ))({
                 "organizationName": BILLING_PROVIDER_ORGANIZATION_NAME,
                 "npi":              BILLING_PROVIDER_NPI,
                 "providerType":     "BillingProvider",
-            }
+            })
         ],
         "subscriber": subscriber,
         "encounter":  encounter,
@@ -238,6 +246,7 @@ def build_claim_status_payload(
             "pulseId":            _safe_str(row.get("Pulse ID")),
             "itemName":           _safe_str(row.get("Name")),
             "dosWindow":          f"{begin}..{end}",
+            "fallbackMode":       fallback_mode,
         },
     }
     if dependent:
@@ -248,7 +257,8 @@ def build_claim_status_payload(
         f"general_insurance={general_insurance!r} -> payer_id={payer_id} | "
         f"partner={partner_name!r} | member_id={member_id!r} | "
         f"dos_window={begin}..{end} | "
-        f"is_dependent={'yes' if dependent else 'no'}"
+        f"is_dependent={'yes' if dependent else 'no'} | "
+        f"fallback={'yes' if fallback_mode else 'no'}"
     )
     # And dump the actual JSON we are about to send so we can verify
     # the exact request shape from Railway logs alone, no separate
