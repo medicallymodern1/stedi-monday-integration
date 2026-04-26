@@ -114,9 +114,12 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         "Gender":                gender,
         # Pass-through for the service-level payer override.
         "_pr_payor_id":          pr_payor_id,
-        # Reserved for future fallback retry (Stedi: "if base request
-        # returns no data, retry with patientControlNumber / taxId /
-        # tradingPartnerClaimNumber"). Not consumed by current builder.
+        # Fallback-retry inputs. Stedi: "if base request returns no
+        # data, retry with tradingPartnerClaimNumber + taxId."
+        # The builder reads "Tradingpartner Claim Number" when called
+        # with fallback_mode=True; keys with leading underscore are
+        # the raw cell values for logging / future extensions.
+        "Tradingpartner Claim Number": tp_claim_num,
         "_pcn":                  pcn,
         "_claim_charge_amount":  claim_amount,
         "_tradingpartner_claim_number": tp_claim_num,
@@ -202,22 +205,62 @@ def run_claim_status_check(monday_item: dict) -> dict[str, Any]:
         # B1. Payer (may be None -> builder resolves via GENERAL map)
         payer_id, partner_name = _resolve_payer(row)
 
-        # B2. Build + validate payload
-        payload = build_claim_status_payload(
-            row,
-            payer_id=payer_id,
-            partner_name=partner_name,
-        )
-        logger.info(
-            f"[CS] Sending | item={item_id} "
-            f"tradingPartnerServiceId={payload.get('tradingPartnerServiceId')}"
-        )
+        def _send_and_parse(*, fallback_mode: bool) -> dict:
+            payload = build_claim_status_payload(
+                row,
+                payer_id=payer_id,
+                partner_name=partner_name,
+                fallback_mode=fallback_mode,
+            )
+            logger.info(
+                f"[CS] Sending | item={item_id} "
+                f"tradingPartnerServiceId={payload.get('tradingPartnerServiceId')} "
+                f"fallback={'yes' if fallback_mode else 'no'}"
+            )
+            raw = send_claim_status_request(payload)
+            return parse_claim_status_response(raw)
 
-        # C. Send
-        raw_response = send_claim_status_request(payload)
+        # First attempt: documented base request (minimal fields).
+        writeback = _send_and_parse(fallback_mode=False)
 
-        # D. Parse
-        writeback = parse_claim_status_response(raw_response)
+        # Stedi's recommended retry pattern: when the base request
+        # returns "Data Search Unsuccessful" (category D*), AND we have
+        # something extra to add (the payer's ICN), retry once with
+        # tradingPartnerClaimNumber + provider taxId. Use the retry
+        # response only if it found more than the base response did.
+        base_cat = (writeback.get("_category_code") or "").upper()[:1]
+        n_base   = writeback.get("_n_claims_returned", 0) or 0
+        tp_claim = (row.get("Tradingpartner Claim Number") or "").strip()
+        # Treat both D-category and zero-claim envelopes as "no data".
+        no_data  = base_cat == "D" or n_base == 0
+
+        if no_data and tp_claim:
+            logger.info(
+                f"[CS] Base request returned no data ({base_cat or 'empty'}); "
+                f"retrying with tradingPartnerClaimNumber={tp_claim!r} + taxId."
+            )
+            try:
+                fb = _send_and_parse(fallback_mode=True)
+                fb_cat = (fb.get("_category_code") or "").upper()[:1]
+                fb_n   = fb.get("_n_claims_returned", 0) or 0
+                # Take the fallback response if it produced ANY actionable
+                # category (F/P/A/R/E with claims), else stick with base.
+                if fb_n > 0 and fb_cat and fb_cat != "D":
+                    logger.info(
+                        f"[CS] Fallback retry succeeded | item={item_id} "
+                        f"category={fb.get('Claim Status Category')!r}"
+                    )
+                    writeback = fb
+                else:
+                    logger.info(
+                        f"[CS] Fallback retry also returned no data; "
+                        f"keeping base response."
+                    )
+            except Exception as e:
+                # Don't let a fallback failure mask the base result.
+                logger.warning(
+                    f"[CS] Fallback retry errored | item={item_id}: {e}"
+                )
 
         logger.info(
             f"[CS] Done | item={item_id} "
