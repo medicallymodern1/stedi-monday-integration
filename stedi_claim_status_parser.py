@@ -223,52 +223,86 @@ def parse_claim_status_response(raw: dict[str, Any]) -> dict[str, Any]:
     cat    = top["category"]
     code   = top["code"]
 
-    # Descriptive text — whatever the payer/Stedi surface beats our own
-    # reconstruction. Fall through in priority order.
-    description = (
+    # Stedi exposes two rich text values in 277 responses:
+    #   statusCategoryCodeValue — the full sentence for the category
+    #     code (e.g. "Finalized/Payment - The claim/line has been paid.")
+    #   statusCodeValue          — the full sentence for the status code
+    #     (e.g. "Claim/line has been paid.")
+    # Older field names (statusDescription / description / text) are kept
+    # in the probe order as a fallback so this code still works against
+    # mocks and edge-case payer payloads.
+    cat_text  = _pick_first(cs, "statusCategoryCodeValue") or ""
+    code_text = _pick_first(cs, "statusCodeValue") or ""
+    fallback  = _pick_first(cs, "statusDescription", "description", "text") or ""
+
+    # Build a human-readable detail string. Format:
+    #   "[F1] Finalized/Payment - The claim/line has been paid. · [65] Claim/line has been paid."
+    # If the rich values are missing we fall back to "[F1] · [65]" plus
+    # whatever generic description we got, so the cell is never blank
+    # when the parser actually saw a claim.
+    bits: list[str] = []
+    if cat:
+        bits.append(f"[{cat}] {cat_text}".rstrip())
+    if code:
+        bits.append(f"[{code}] {code_text}".rstrip())
+    if fallback and fallback not in (cat_text, code_text):
+        bits.append(fallback)
+    detail = " · ".join(bits) if bits else "(no description)"
+
+    # Payer's claim control number (ICN). Stedi puts it inside
+    # claimStatus as ``tradingPartnerClaimNumber``. Older fallback
+    # names probed against the outer claim envelope so legacy mocks
+    # still work.
+    icn = (
         _pick_first(
             cs,
-            "statusDescription", "description", "text",
+            "tradingPartnerClaimNumber",
+            "payerClaimControlNumber",
+            "claimControlNumber",
         )
-        or ""
-    )
-    if not description:
-        entity = _pick_first(cs, "entityIdentifier", "entityIdentifierCode")
-        pieces = [p for p in (entity, cat, code) if p]
-        description = " · ".join(str(p) for p in pieces)
-
-    detail = " · ".join(p for p in (
-        f"{cat}{code}" if cat and code else (cat or code or ""),
-        description,
-    ) if p)
-
-    # Payer's claim control number (ICN) — different payers put it in
-    # different places; try the common spots.
-    icn = _pick_first(
-        claim,
-        "claimControlNumber",
-        "payerClaimControlNumber",
-        "payerClaimIdentifier",
-        "claimId",
+        or _pick_first(
+            claim,
+            "tradingPartnerClaimNumber",
+            "claimControlNumber",
+            "payerClaimControlNumber",
+            "payerClaimIdentifier",
+            "claimId",
+        )
     )
 
-    # Payment amount (when finalized-paid)
-    paid = _money(_pick_first(
-        claim,
-        "claimPaymentAmount",
-        "paymentAmount",
-        "totalClaimPaidAmount",
-    ))
+    # Payment amount. Stedi names it ``amountPaid`` (string) inside
+    # claimStatus; older mocks used ``claimPaymentAmount`` at the
+    # outer level. _money() handles string-or-number cleanly.
+    paid = _money(
+        _pick_first(
+            cs,
+            "amountPaid", "paymentAmount", "claimPaymentAmount",
+        )
+        or _pick_first(
+            claim,
+            "claimPaymentAmount", "amountPaid",
+            "paymentAmount", "totalClaimPaidAmount",
+        )
+    )
+
+    # Bonus metadata for the Notes & Activity log line.
+    check_no   = _pick_first(cs, "checkNumber") or ""
+    paid_date  = _pick_first(cs, "paidDate", "effectiveDate") or ""
+    pcn_echo   = _pick_first(cs, "patientAccountNumber") or ""
 
     writeback: dict[str, Any] = {
         "Claim Status Category":    label,
-        "Claim Status Detail":      detail[:500] if detail else "(no description)",
+        "Claim Status Detail":      (detail[:500] if detail else "(no description)"),
         "277 ICN":                  str(icn) if icn else "",
         "277 Paid Amount":          paid,
         "Last Claim Status Check":  today,
         "_category_code":           cat,
         "_status_code":             code,
         "_n_claims_returned":       len(claims),
+        # Bonus fields surfaced for the Monday Notes & Activity formatter
+        "_check_number":            str(check_no) if check_no else "",
+        "_paid_date":               str(paid_date) if paid_date else "",
+        "_patient_account_number":  str(pcn_echo) if pcn_echo else "",
     }
 
     logger.info(
