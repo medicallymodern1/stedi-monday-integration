@@ -43,6 +43,7 @@ from routes.order_webhook import router as order_router
 from routes.claims_webhook import router as claims_router
 from routes.intake_insurance_webhook import router as intake_insurance_router
 from routes.subscription_eligibility_webhook import router as subscription_eligibility_router
+from routes.claim_status_webhook import router as claim_status_router
 from services.era_parser_service import parse_era_from_string, summarize_era_row_for_monday
 from services.monday_service import populate_era_data_on_claims_item
 
@@ -72,6 +73,7 @@ app.include_router(claims_router, prefix="/claims", tags=["Claims"])
 app.include_router(intake_insurance_router, prefix="/intake-insurance", tags=["Intake Insurance"])
 app.include_router(eligibility_router, prefix="/eligibility", tags=["Eligibility"])
 app.include_router(subscription_eligibility_router, prefix="/subscription-eligibility", tags=["Subscription Eligibility"])
+app.include_router(claim_status_router, prefix="/claim-status", tags=["Claim Status"])
 
 
 # ─── Health check ─────────────────────────────────────────────────────────────
