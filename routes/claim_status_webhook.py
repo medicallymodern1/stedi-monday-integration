@@ -64,13 +64,25 @@ def _ack(challenge: str | None = None) -> JSONResponse:
 
 
 def fetch_claims_item(item_id: str) -> dict:
-    """Fetch a single Claims Board item with all column_values."""
+    """
+    Fetch a single Claims Board item with all column_values.
+
+    Also pulls subitems' Charge Amount column (numeric_mm1za8v5) so
+    services/claim_status_service can sum service-line charges as a
+    fallback when the parent's Raw Claim Charge Amount is blank
+    (typical pre-ERA state). The subitem fetch is filtered to a single
+    column id so the response stays compact.
+    """
     query = """
     query GetClaimsItem($itemId: ID!) {
       items(ids: [$itemId]) {
         id
         name
         column_values { id text value }
+        subitems {
+          id
+          column_values(ids: ["numeric_mm1za8v5"]) { id text value }
+        }
       }
     }
     """

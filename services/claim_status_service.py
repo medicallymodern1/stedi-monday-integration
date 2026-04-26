@@ -67,6 +67,42 @@ CLAIM_STATUS_FAILED_FLAG = "_claim_status_failed"
 # A. INPUT LAYER
 # =============================================================================
 
+def _sum_subitem_charges(monday_item: dict) -> float:
+    """
+    Sum the Charge Amount (numeric_mm1za8v5) cell across this item's
+    subitems. Returns 0.0 when no subitems carry a numeric value.
+
+    Used as a fallback when the parent's Raw Claim Charge Amount
+    (numeric_mm1ghydj) is blank — most commonly the pre-ERA state,
+    which is also the most useful moment to run a 276 status check.
+    """
+    subitems = monday_item.get("subitems") or []
+    if not isinstance(subitems, list):
+        return 0.0
+
+    total = 0.0
+    line_count = 0
+    for sub in subitems:
+        if not isinstance(sub, dict):
+            continue
+        for cv in (sub.get("column_values") or []):
+            if cv.get("id") != "numeric_mm1za8v5":
+                continue
+            text = (cv.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                total += float(text.replace("$", "").replace(",", ""))
+                line_count += 1
+            except ValueError:
+                continue
+    if line_count and total > 0:
+        logger.info(
+            f"[CS-INPUT] Subitem charge sum | lines={line_count} total=${total}"
+        )
+    return total
+
+
 def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
     """
     Map Claims Board column_values -> normalised row dict that the
@@ -90,7 +126,19 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         cols.get(CLAIMS_BOARD_INPUT_COL["patient_control_number"], "").strip()
         or cols.get(CLAIMS_BOARD_INPUT_COL["claim_id_alt"], "").strip()
     )
-    claim_amount   = cols.get(CLAIMS_BOARD_INPUT_COL["claim_charge_amount"], "").strip()
+
+    # Claim charge amount: parent's "Raw Claim Charge Amount"
+    # (numeric_mm1ghydj) is populated by the ERA pipeline. For pre-ERA
+    # claims that cell is blank, so fall back to summing subitem
+    # Charge Amounts (numeric_mm1za8v5). Some payers (Fidelis confirmed)
+    # require submittedAmount in the 276 to find the claim; this
+    # fallback keeps that working even before adjudication.
+    claim_amount = cols.get(CLAIMS_BOARD_INPUT_COL["claim_charge_amount"], "").strip()
+    if not claim_amount:
+        sub_total = _sum_subitem_charges(monday_item)
+        if sub_total > 0:
+            claim_amount = str(sub_total)
+
     tp_claim_num   = cols.get(CLAIMS_BOARD_INPUT_COL["tradingpartner_claim_number"], "").strip()
 
     first_name, last_name = _split_name(monday_item.get("name", ""))
