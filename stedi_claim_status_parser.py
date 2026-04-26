@@ -181,7 +181,16 @@ def parse_claim_status_response(raw: dict[str, Any]) -> dict[str, Any]:
     today  = _dt.date.today().isoformat()
 
     if not claims:
-        # Also treat "Stedi-level error returned no claim envelope" as No Match.
+        # Stedi-level error or empty response — surface the raw 277 so
+        # we can see exactly what came back without needing a second
+        # round-trip to debug.
+        import json as _json
+        try:
+            raw_excerpt = _json.dumps(raw, default=str)[:2000]
+        except Exception:
+            raw_excerpt = repr(raw)[:2000]
+        logger.warning(f"[CS-PARSER] RAW 277 (no claims envelope): {raw_excerpt}")
+
         return {
             "Claim Status Category":   "No Match",
             "Claim Status Detail":     _error_detail(raw) or "No claims returned in 277 response.",
