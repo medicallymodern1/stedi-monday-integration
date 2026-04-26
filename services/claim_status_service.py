@@ -112,6 +112,11 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         # Gender (M/F) — used in subscriber + dependent blocks per Stedi
         # docs ("recommended for best results").
         "Gender":                gender,
+        # Always-sent: the claim charge amount surfaced as
+        # encounter.submittedAmount in the 276 request. Empirical
+        # confirmation (Fidelis, 2026-04-26): some payers refuse to
+        # match the claim without it.
+        "Claim Charge Amount":   claim_amount,
         # Pass-through for the service-level payer override.
         "_pr_payor_id":          pr_payor_id,
         # Fallback-retry inputs. Stedi: "if base request returns no

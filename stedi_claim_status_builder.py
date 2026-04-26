@@ -170,11 +170,14 @@ def build_claim_status_payload(
     # is at best ignored, at worst confuses payer-side parsing. Drop.
 
     # Per Stedi's "Check claim status" guide, the recommended base
-    # request is intentionally minimal — sending too much narrows the
-    # search and causes false no-matches.
+    # request is intentionally minimal — but empirical testing showed
+    # several payers (Fidelis confirmed) need encounter.submittedAmount
+    # as a search criterion to find the claim. Stedi's docs don't list
+    # it as a request field; Stedi's UI does, and it works. We always
+    # send it when the Claims Board row carries a charge.
     #
     # Fallback mode adds Stedi's documented "if base returns no data,
-    # try these" fields:
+    # try these" fields on top of the base:
     #   - encounter.tradingPartnerClaimNumber  (the payer's claim ID/ICN)
     #   - providers[0].taxId                   (billing provider TIN/EIN)
     # See ``fallback_mode`` parameter; the orchestrator flips it after
@@ -183,6 +186,14 @@ def build_claim_status_payload(
         "beginningDateOfService": begin,
         "endDateOfService":       end,
     }
+    raw_amt = _safe_str(row.get("Claim Charge Amount"))
+    if raw_amt:
+        try:
+            encounter["submittedAmount"] = float(
+                raw_amt.replace("$", "").replace(",", "")
+            )
+        except ValueError:
+            pass  # silently skip — non-fatal
     if fallback_mode:
         tp_claim_num = _safe_str(row.get("Tradingpartner Claim Number"))
         if tp_claim_num:
@@ -247,6 +258,7 @@ def build_claim_status_payload(
             "itemName":           _safe_str(row.get("Name")),
             "dosWindow":          f"{begin}..{end}",
             "fallbackMode":       fallback_mode,
+            "submittedAmount":    raw_amt,
         },
     }
     if dependent:
@@ -256,7 +268,7 @@ def build_claim_status_payload(
         f"[CS-BUILDER] Payload ready | "
         f"general_insurance={general_insurance!r} -> payer_id={payer_id} | "
         f"partner={partner_name!r} | member_id={member_id!r} | "
-        f"dos_window={begin}..{end} | "
+        f"dos_window={begin}..{end} | submitted_amount={raw_amt!r} | "
         f"is_dependent={'yes' if dependent else 'no'} | "
         f"fallback={'yes' if fallback_mode else 'no'}"
     )
