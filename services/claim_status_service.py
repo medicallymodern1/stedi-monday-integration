@@ -49,12 +49,15 @@ CLAIMS_BOARD_INPUT_COL = {
     "insurance_type":     "color_mkxmmm77",   # status (Commercial/Medicare/Medicaid)
     "dos":                "date_mkwr7spz",
     "pr_payor_id":        "text_mm1gcz3y",    # text (optional)
-    # Optional claim-pinpoint fields. Sending these tightens the payer's
-    # match — Cigna in particular returns "missing or invalid information"
-    # (E0/21) on a 276 that lacks a patient control number.
+    "gender":             "color_mm1zy5f2",   # status: "Male"/"Female"
+    # Reserved for a future fallback retry attempt — not in the base
+    # request, per Stedi's "send minimal info first" guidance. Read here
+    # so the row dict carries them; the builder ignores until the
+    # fallback path is wired.
     "patient_control_number": "text_mm1gkf40",   # "Raw Patient Control Number"
     "claim_id_alt":           "text_mm1zpzrs",   # "Claim ID" — fallback PCN source
     "claim_charge_amount":    "numeric_mm1ghydj",# "Raw Claim Charge Amount"
+    "tradingpartner_claim_number": "text_mm2nfytt",  # payer's ICN ("Payer Claim Number")
 }
 
 CLAIM_STATUS_FAILED_FLAG = "_claim_status_failed"
@@ -80,11 +83,15 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
     dob            = cols.get(CLAIMS_BOARD_INPUT_COL["dob"], "").strip()
     dos            = cols.get(CLAIMS_BOARD_INPUT_COL["dos"], "").strip()
     pr_payor_id    = cols.get(CLAIMS_BOARD_INPUT_COL["pr_payor_id"], "").strip()
+    gender_raw     = cols.get(CLAIMS_BOARD_INPUT_COL["gender"], "").strip()
+    gender         = {"Male": "M", "Female": "F"}.get(gender_raw, "")
+
     pcn            = (
         cols.get(CLAIMS_BOARD_INPUT_COL["patient_control_number"], "").strip()
         or cols.get(CLAIMS_BOARD_INPUT_COL["claim_id_alt"], "").strip()
     )
     claim_amount   = cols.get(CLAIMS_BOARD_INPUT_COL["claim_charge_amount"], "").strip()
+    tp_claim_num   = cols.get(CLAIMS_BOARD_INPUT_COL["tradingpartner_claim_number"], "").strip()
 
     first_name, last_name = _split_name(monday_item.get("name", ""))
 
@@ -102,21 +109,26 @@ def extract_claim_status_inputs(monday_item: dict) -> dict[str, Any]:
         "Date of Service":       dos,
         "Pulse ID":              str(monday_item.get("id", "")),
         "Name":                  monday_item.get("name", ""),
+        # Gender (M/F) — used in subscriber + dependent blocks per Stedi
+        # docs ("recommended for best results").
+        "Gender":                gender,
         # Pass-through for the service-level payer override.
         "_pr_payor_id":          pr_payor_id,
-        # Optional 276 fields — payers often need these to pinpoint
-        # the right claim record (Cigna especially).
-        "Patient Control Number": pcn,
-        "Claim Charge Amount":    claim_amount,
+        # Reserved for future fallback retry (Stedi: "if base request
+        # returns no data, retry with patientControlNumber / taxId /
+        # tradingPartnerClaimNumber"). Not consumed by current builder.
+        "_pcn":                  pcn,
+        "_claim_charge_amount":  claim_amount,
+        "_tradingpartner_claim_number": tp_claim_num,
     }
 
     logger.debug(
         f"[CS-INPUT] primary_payor={primary_payor!r} "
         f"insurance_type={insurance_type!r} "
         f"member_id={member_id!r} dob={dob!r} dos={dos!r} "
-        f"first={first_name!r} last={last_name!r} "
+        f"gender={gender!r} first={first_name!r} last={last_name!r} "
         f"pr_payor_id={pr_payor_id!r} pcn={pcn!r} "
-        f"claim_amount={claim_amount!r}"
+        f"claim_amount={claim_amount!r} tp_claim_num={tp_claim_num!r}"
     )
 
     return row
