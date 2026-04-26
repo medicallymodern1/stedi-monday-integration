@@ -148,11 +148,26 @@ def build_claim_status_payload(
     member_id   = _safe_str(row["Member ID"])
     begin, end  = _dos_window(row.get("Date of Service"))
 
-    control_number = (
+    # Stedi requires a 9-digit numeric controlNumber (maps to X12 ISA13
+    # + TRN02). Anything else fails validation downstream. Pulse IDs are
+    # typically 10–11 digits, so we take the last 9 — collisions are
+    # benign because the field is a request-trace, not a key.
+    raw_cn = (
         _safe_str(row.get("Pulse ID"))
         or _safe_str(row.get("Name"))
         or member_id
-    )[:80]
+    )
+    digits_only = "".join(ch for ch in raw_cn if ch.isdigit())
+    if len(digits_only) >= 9:
+        control_number = digits_only[-9:]
+    elif digits_only:
+        control_number = digits_only.zfill(9)
+    else:
+        # Fall back to a deterministic 9-digit hash so the same row keeps
+        # the same controlNumber across re-runs (helpful for Stedi support).
+        import hashlib as _hashlib
+        h = _hashlib.sha1(raw_cn.encode("utf-8")).hexdigest()
+        control_number = str(int(h, 16))[:9].zfill(9)
 
     encounter: dict[str, Any] = {
         "beginningDateOfService": begin,
