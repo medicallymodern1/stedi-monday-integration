@@ -713,6 +713,10 @@ def summarize_era_row_for_monday(era_row: dict) -> dict:
         # 7 client-required Raw parent columns
         "raw_patient_control_num":    parent.get("raw_patient_control_num",    ""),
         "raw_payer_claim_control":    parent.get("raw_payer_claim_control",    ""),
+        # Mirror the ICN into the consolidated "Payer Claim Number"
+        # column (text_mm2nfytt) so the claim-status check can use it
+        # for fallback retries. Same value as raw_payer_claim_control.
+        "payer_claim_number":         parent.get("raw_payer_claim_control",    ""),
         "raw_total_claim_charge":     parent.get("raw_total_claim_charge",     ""),
         "raw_remittance_trace":       parent.get("raw_remittance_trace",       ""),
         "raw_patient_responsibility": parent.get("raw_patient_responsibility", ""),

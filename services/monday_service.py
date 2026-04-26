@@ -311,6 +311,12 @@ ERA_PARENT_COLUMN_MAP = {
     # 7 client-required "Raw" columns (confirmed IDs)
     "raw_patient_control_num":    ("text_mm1gkf40",    "text"),    # Raw Patient Control Number
     "raw_payer_claim_control":    ("text_mm1gefbz",    "text"),    # Raw Payer Claim Control Number
+    # Mirror of raw_payer_claim_control into the consolidated "Payer
+    # Claim Number" column (text_mm2nfytt) — same source of truth that
+    # the 277 webhook + claim-status check use. Lets the claim-status
+    # check find the row's ICN regardless of which signal landed first
+    # (277CA at submission ack OR ERA at adjudication).
+    "payer_claim_number":         ("text_mm2nfytt",    "text"),    # Payer Claim Number (consolidated)
     "raw_total_claim_charge":     ("numeric_mm1ghydj", "number"),  # Raw Claim Charge Amount
     "raw_remittance_trace":       ("text_mm1gz8ss",    "text"),    # Raw Remittance Trace Number
     "raw_patient_responsibility": ("numeric_mm1gdpjq", "number"),  # Raw Patient Responsibility Amount

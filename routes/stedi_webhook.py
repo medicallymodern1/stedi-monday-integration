@@ -285,87 +285,164 @@ def _map_277_status(raw_status: str, report: dict, category_code: str = "") -> s
     return "Stedi Accepted" if is_stedi_level else "Payer Accepted"
 
 
+# ---------------------------------------------------------------------------
+# Field-name probes for the recursive 277 walker
+# ---------------------------------------------------------------------------
+# Stedi has shipped two distinct JSON shapes for 277 reports over time:
+#
+# 1. Legacy "logical" shape:
+#      transactions[0].payers[0].claimStatusTransactions[0]
+#        .claimStatusDetails[0].patientClaimStatusDetails[0].claims[0]
+#        .claimStatus.informationClaimStatuses[0].informationStatuses[0]
+#
+# 2. X12-typed shape (what Fidelis returned 2026-04-23):
+#      detail.information_source_level_HL_loop[0]
+#        .information_receiver_level_HL_loop[0]
+#        .billing_provider_of_service_level_HL_loop[0]
+#        .patient_level_HL_loop[0]
+#        .claim_status_tracking_number_TRN_loop[0]
+#        .claim_level_status_information_STC[0]
+#          .health_care_claim_status_01.health_care_claim_status_category_code_01
+#
+# Rather than walk both fragile paths, we recursively search the full
+# report for field names from a probe list. This is robust to future
+# shape drift and lets us fall back gracefully when one shape's fields
+# are missing.
+
+_CATEGORY_PROBES = (
+    "healthCareClaimStatusCategoryCode",
+    "health_care_claim_status_category_code_01",
+    "statusCategoryCode",
+)
+_STATUS_CODE_PROBES = (
+    "healthCareClaimStatusCode",
+    "health_care_claim_status_code_02",
+    "statusCode",
+)
+_STATUS_VALUE_PROBES = (
+    "statusCodeValue",
+    "healthCareClaimStatusCodeValue",
+    "statusDescription",
+    "description",
+)
+_PCN_PROBES = (
+    "patientAccountNumber",
+    "patient_control_number_02",
+    "patientControlNumber",
+)
+_PAYER_CLAIM_PROBES = (
+    "tradingPartnerClaimNumber",
+    "payerClaimControlNumber",
+    "claimControlNumber",
+    "payer_claim_control_number_01",
+    "payer_claim_control_number_02",
+)
+_BATCH_PROBES = (
+    "claimTransactionBatchNumber",
+    "claim_transaction_batch_number_02",
+)
+
+
+def _walk_first(obj, keys: tuple) -> str:
+    """
+    Depth-first walk through ``obj`` and return the first non-empty string
+    value whose key matches any in ``keys``. Returns "" if not found.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys:
+                if isinstance(v, (str, int, float)) and str(v).strip():
+                    return str(v).strip()
+                if isinstance(v, dict):
+                    # Some payers wrap the value in an object; pull a
+                    # likely sub-field if present.
+                    for sub in ("value", "code"):
+                        sv = v.get(sub)
+                        if isinstance(sv, (str, int, float)) and str(sv).strip():
+                            return str(sv).strip()
+            # Recurse regardless — match may be deeper than this node.
+            sub = _walk_first(v, keys)
+            if sub:
+                return sub
+    elif isinstance(obj, list):
+        for item in obj:
+            sub = _walk_first(item, keys)
+            if sub:
+                return sub
+    return ""
+
+
 def parse_277_status(report: dict) -> tuple:
     """
-    Extract claim status from 277 report.
-    Returns (status, rejection_reason, patient_account_number, claim_id, category_code, payer_claim_number)
+    Extract claim status from a 277 report.
+
+    Returns (status, rejection_reason, patient_account_number,
+             claim_id, category_code, payer_claim_number)
+
+    Recursive over the full report: works against both the legacy
+    "logical" Stedi JSON shape and the newer X12-typed shape (where
+    fields are nested inside ``detail.information_source_level_HL_loop``
+    etc.). When a field appears in multiple places, we take the first
+    non-empty match — which biases toward whatever the payer surfaced
+    most prominently.
     """
     try:
-        claims = (
-            report.get("transactions", [{}])[0]
-            .get("payers", [{}])[0]
-            .get("claimStatusTransactions", [{}])[0]
-            .get("claimStatusDetails", [{}])[0]
-            .get("patientClaimStatusDetails", [{}])[0]
-            .get("claims", [{}])[0]
-        )
+        category_code           = _walk_first(report, _CATEGORY_PROBES)
+        status_code_value       = _walk_first(report, _STATUS_VALUE_PROBES)
+        status_code             = _walk_first(report, _STATUS_CODE_PROBES)
+        patient_account_number  = _walk_first(report, _PCN_PROBES)
+        claim_id                = _walk_first(report, _BATCH_PROBES)
+        payer_claim_number      = _walk_first(report, _PAYER_CLAIM_PROBES)
 
-        claim_status = claims.get("claimStatus", {})
-        patient_account_number = claims.get("patientAccountNumber", "")
-
-        # patientAccountNumber is on claimStatus, not claims — try both
-        if not patient_account_number:
-            patient_account_number = claim_status.get("patientAccountNumber", "")
-
-        info_statuses = (
-            claim_status
-            .get("informationClaimStatuses", [{}])[0]
-            .get("informationStatuses", [{}])[0]
-        )
-
-        category_code = info_statuses.get("healthCareClaimStatusCategoryCode", "")
-        status_value  = info_statuses.get("statusCodeValue", "")
-
-        # Rejection codes confirmed by Stedi support:
+        # Status mapping (unchanged from previous behaviour)
         REJECTION_CODES = {"A3", "A6", "A7", "A8", "DR05", "DR06", "DR07"}
-
-        # A0  = Acknowledged at clearinghouse (Stedi accepted, forwarded to payer)
-        # A1  = Accepted for processing (Stedi or Payer — determined by _map_277_status)
-        # A2  = Accepted into adjudication system (Payer accepted)
-        # A4  = Not found / pending (not a rejection — claim still processing)
-        # A3, A6, A7, A8, DR05, DR06, DR07 = Rejected
         if category_code in ("A0", "A1"):
             status = "Accepted"
             rejection_reason = ""
         elif category_code == "A2":
-            # A2 = accepted into payer adjudication system — this is payer-level acceptance
             status = "Accepted"
             rejection_reason = ""
         elif category_code in REJECTION_CODES:
             status = "Rejected"
-            rejection_reason = status_value
+            rejection_reason = status_code_value
         elif category_code == "A4":
             status = "Pending"
             rejection_reason = ""
         else:
-            # Unknown code — log it but don't assume rejected
+            # Unknown code — log but don't assume rejected
             status = "Pending"
-            rejection_reason = status_value
+            rejection_reason = status_code_value
 
-        # Also extract claim_id (claimTransactionBatchNumber) for fallback lookup
-        claim_id = ""
-        try:
-            claim_id = (
-                report.get("transactions", [{}])[0]
-                .get("payers", [{}])[0]
-                .get("claimStatusTransactions", [{}])[0]
-                .get("claimTransactionBatchNumber", "")
+        logger.info(
+            f"[277] category={category_code} | status_code={status_code} | "
+            f"status={status} | pcn={patient_account_number} | "
+            f"claim_id={claim_id} | payer_claim={payer_claim_number}"
+        )
+
+        # Diagnostic — when ICN extraction comes back empty, dump a
+        # truncated view of the raw report so future "where's the
+        # column write" questions can be answered from logs.
+        if not payer_claim_number:
+            try:
+                excerpt = json.dumps(report, default=str)[:2000]
+            except Exception:
+                excerpt = repr(report)[:2000]
+            logger.warning(
+                f"[277] No payer claim number resolved from report. "
+                f"Excerpt: {excerpt}"
             )
-        except Exception:
-            pass
 
-        # Extract payer's claim number (tradingPartnerClaimNumber) — needed for corrected/void claims
-        payer_claim_number = ""
-        try:
-            payer_claim_number = claim_status.get("tradingPartnerClaimNumber", "")
-        except Exception:
-            pass
-
-        logger.info(f"[277] category={category_code} | status={status} | pcn={patient_account_number} | claim_id={claim_id} | payer_claim={payer_claim_number}")
-        return status, rejection_reason, patient_account_number, claim_id, category_code, payer_claim_number
+        return (
+            status,
+            rejection_reason,
+            patient_account_number,
+            claim_id,
+            category_code,
+            payer_claim_number,
+        )
 
     except Exception as e:
-        logger.error(f"[277] parse failed: {e}")
+        logger.error(f"[277] parse failed: {e}", exc_info=True)
         return "Unknown", "", "", "", "", ""
 
 #

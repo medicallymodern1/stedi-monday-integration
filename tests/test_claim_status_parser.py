@@ -190,6 +190,36 @@ def test_parse_real_anthem_response_shape():
     assert out["_check_number"]         == "7706295087"
     assert out["_paid_date"]            == "2026-04-11"
 
+
+
+def test_parse_f0_with_paid_amount_resolves_to_paid():
+    """Brandon 2026-04-26: F0 with paid>0 should be classified as Paid."""
+    raw = {"claims": [_fake_claim(
+        "F0", "107",
+        paid=2500.0,
+        icn="ICN-PAID-F0",
+        cat_text="Finalized - The claim/encounter has completed the adjudication cycle.",
+        code_text="Processed according to contract provisions.",
+    )]}
+    out = parse_claim_status_response(raw)
+    assert out["Claim Status Category"] == "Paid", out
+    assert out["277 Paid Amount"] == 2500.0
+
+
+def test_parse_f0_with_zero_paid_resolves_to_denied():
+    """Brandon 2026-04-26: F0 with paid=0 should be classified as Denied
+    (Fidelis case — claim adjudicated, no payment due to UM denial)."""
+    raw = {"claims": [_fake_claim(
+        "F0", "107",
+        paid=0.0,
+        icn="551309838000",
+        cat_text="Finalized - The claim/encounter has completed the adjudication cycle.",
+        code_text="Processed according to contract provisions.",
+    )]}
+    out = parse_claim_status_response(raw)
+    assert out["Claim Status Category"] == "Denied", out
+    assert out["277 Paid Amount"] == 0.0
+    assert out["277 ICN"] == "551309838000"
 if __name__ == "__main__":
     test_category_code_to_label()
     test_parse_paid_claim()
@@ -200,4 +230,6 @@ if __name__ == "__main__":
     test_nested_claims_under_provider_level()
     test_error_writeback()
     test_parse_real_anthem_response_shape()
+    test_parse_f0_with_paid_amount_resolves_to_paid()
+    test_parse_f0_with_zero_paid_resolves_to_denied()
     print("all parser tests passed")

@@ -290,6 +290,13 @@ def parse_claim_status_response(raw: dict[str, Any]) -> dict[str, Any]:
     paid_date  = _pick_first(cs, "paidDate", "effectiveDate") or ""
     pcn_echo   = _pick_first(cs, "patientAccountNumber") or ""
 
+    # F0 = "Finalized" without an explicit Paid/Denied/Revised subcategory
+    # — the X12 spec leaves it ambiguous, so we resolve via the dollar
+    # amount: anything paid > 0 is "Paid", $0 is effectively "Denied".
+    # Other F-subcodes (F1/F2/F3/F4) are unambiguous and stay as-is.
+    if cat.upper().startswith("F") and (cat[1:2] == "0" or cat.upper() == "F"):
+        label = "Paid" if paid > 0 else "Denied"
+
     writeback: dict[str, Any] = {
         "Claim Status Category":    label,
         "Claim Status Detail":      (detail[:500] if detail else "(no description)"),
