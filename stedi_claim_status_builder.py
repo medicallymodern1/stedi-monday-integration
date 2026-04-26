@@ -189,9 +189,16 @@ def build_claim_status_payload(
     raw_amt = _safe_str(row.get("Claim Charge Amount"))
     if raw_amt:
         try:
-            encounter["submittedAmount"] = float(
-                raw_amt.replace("$", "").replace(",", "")
-            )
+            amt = float(raw_amt.replace("$", "").replace(",", ""))
+            # Stedi 276 expects submittedAmount as a STRING (HTTP 400
+            # 'Encounter.submittedAmount: invalid type: number, expected
+            # a string' otherwise). Format whole dollars without decimals,
+            # fractional amounts with two decimals — matches the shape
+            # Stedi echoes back in 277 responses.
+            if amt == int(amt):
+                encounter["submittedAmount"] = str(int(amt))
+            else:
+                encounter["submittedAmount"] = f"{amt:.2f}"
         except ValueError:
             pass  # silently skip — non-fatal
     if fallback_mode:
