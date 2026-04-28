@@ -657,50 +657,63 @@ def _parse_financial_field(
 def _parse_plan_begin_date(response: dict) -> str:
     """
     Resolve the plan-begin / coverage-effective date from a Stedi 271 response.
-    Different payers populate this in different slots, so we probe several
-    in priority order and return the first non-empty hit.
+    Different payers stash this in different slots, so we probe in priority
+    order and return the first hit we trust.
 
-    Probes (each may be YYYYMMDD or YYYY-MM-DD):
-      1. response.planDateInformation.planBegin           — most payers
-      2. response.planDateInformation.eligibility         — some commercial
-      3. response.planDateInformation.coverage            — fallback
-      4. benefitsInformation[].benefitsDateInformation.planBegin       — Medicare often
-      5. benefitsInformation[].benefitsDateInformation.eligibilityBegin
-      6. benefitsInformation[].benefitsDateInformation.eligibility
-      7. benefitsInformation[].benefitsDateInformation.coverage
+    Priority:
+      1. response.planDateInformation.planBegin
+            — most commercial payers; most reliable when present.
+      2. benefitsInformation[].benefitsDateInformation.{plan, planBegin,
+            eligibilityBegin, eligibility, coverage} on entries that
+            represent active coverage (code == "1").
+            — Medicare Part A & B 271s put it here as field name "plan".
+            We pick the earliest single date so combined Part A/B coverage
+            still reports the original effective date.
 
-    For benefitsInformation hits we pick the earliest date — that's the
-    overall plan effective date even if Part A and Part B were issued
-    on different dates.
+    We deliberately DO NOT use:
+      - planDateInformation.eligibility / .coverage at the top level —
+        Medicare returns the inquiry date (today) here, not a coverage
+        effective date.
+      - benefitsDateInformation entries that are date ranges (e.g.
+        "20260101-20261231") — these are the plan-year window, not the
+        coverage start.
 
-    Returns "" if no probe matched.
+    Returns "" if nothing matched.
     """
     def _norm(raw: str) -> str:
+        """YYYYMMDD → YYYY-MM-DD; reject ranges and anything else."""
         raw = (raw or "").strip()
         if not raw:
             return ""
+        # Reject explicit ranges like "20260101-20261231"
+        if "-" in raw and len(raw) > 10:
+            return ""
         if len(raw) == 8 and raw.isdigit():
             return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
-        return raw
+        # Already YYYY-MM-DD
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            return raw
+        return ""
 
-    # 1-3: top-level planDateInformation
+    # 1) Trusted top-level slot
     pdi = response.get("planDateInformation") or {}
-    for key in ("planBegin", "eligibility", "coverage"):
-        hit = _norm(pdi.get(key) or "")
-        if hit:
-            return hit
+    hit = _norm(pdi.get("planBegin") or "")
+    if hit:
+        return hit
 
-    # 4-7: per-benefit benefitsDateInformation — pick the earliest
+    # 2) Per-benefit dates on Active Coverage entries (code == "1")
     candidates: list[str] = []
     for bi in (response.get("benefitsInformation") or []):
+        if str(bi.get("code") or "").strip() != "1":
+            continue
         bdi = bi.get("benefitsDateInformation") or {}
-        for key in ("planBegin", "eligibilityBegin", "eligibility", "coverage"):
+        for key in ("plan", "planBegin", "eligibilityBegin",
+                    "eligibility", "coverage"):
             hit = _norm(bdi.get(key) or "")
             if hit:
                 candidates.append(hit)
     if candidates:
-        # Earliest YYYY-MM-DD string sorts lexicographically
-        return min(candidates)
+        return min(candidates)  # earliest YYYY-MM-DD sorts correctly
 
     return ""
 
