@@ -130,17 +130,43 @@ def extract_subscription_eligibility_inputs(monday_item: dict) -> dict[str, Any]
 # B. PAYER RESOLUTION
 # =============================================================================
 
+# Eligibility-only payer routing overrides — these apply ONLY to the
+# Subscription Board 270/271 eligibility check, NOT to claim submission.
+#
+# Use case: a payer's eligibility gateway rejects us as not enrolled
+# (e.g. Horizon BCBS → "Provider Ineligible for Inquiries"), but the
+# claims gateway accepts us at the real payer ID. We override the
+# eligibility lookup to a payer we are enrolled with that can return
+# coverage info for the same member, while leaving claim_assumptions
+# (which drives claim filing) untouched.
+SUBSCRIPTION_ELIGIBILITY_PAYER_ID_OVERRIDES: dict[str, str] = {
+    "Horizon BCBS": "803",  # route eligibility through Anthem (we are
+                            # enrolled with 803). Claims still file to
+                            # 11348 via claim_assumptions.PAYER_ID_MAP.
+}
+
+
 def _resolve_subscription_payer(primary_insurance: str) -> tuple[str, str]:
     """
     Resolve the specific Primary Insurance label -> (payer_id, partner_name)
-    using ``claim_assumptions`` as the single source of truth.
+    using ``claim_assumptions`` as the single source of truth, with optional
+    eligibility-only overrides applied first (see
+    SUBSCRIPTION_ELIGIBILITY_PAYER_ID_OVERRIDES above).
 
     Raises ValueError with an actionable message if either lookup fails.
     """
     if not primary_insurance:
         raise ValueError("Missing required field: Primary Insurance")
 
-    payer_id = PAYER_ID_MAP.get(primary_insurance, "")
+    # Eligibility-only override takes precedence over the shared
+    # claim_assumptions map. This is so we can route a 270 to a payer
+    # we are enrolled with for inquiries while still filing claims
+    # to the real payer ID.
+    override = SUBSCRIPTION_ELIGIBILITY_PAYER_ID_OVERRIDES.get(primary_insurance)
+    if override:
+        payer_id = override
+    else:
+        payer_id = PAYER_ID_MAP.get(primary_insurance, "")
     if not payer_id:
         raise ValueError(
             f"Unknown payer mapping for Primary Insurance: {primary_insurance!r}. "
