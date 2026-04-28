@@ -38,7 +38,7 @@ GENERAL_PAYER_ID_MAP: dict[str, str] = {
     "Cigna":              "62308",
     "Medicaid":           "MCDNY",
     "Midlands Choice":    "47080",
-    "MagnaCare":          "MAGNACARE_PLACEHOLDER",
+    "MagnaCare":          "11303",
     # Newly approved Primary Insurance labels (PRD §5) routed via their
     # respective Stedi payer IDs (see claim_assumptions.PAYER_ID_MAP).
     "Horizon BCBS":       "803",  # route Intake eligibility through Anthem (we are enrolled with 803, not 11348)
@@ -142,10 +142,6 @@ def _resolve_payer_id(general_insurance: str) -> str:
             f"Unknown payer mapping for General Insurance: {general_insurance!r}. "
             f"Add it to GENERAL_PAYER_ID_MAP."
         )
-    if payer_id == "MAGNACARE_PLACEHOLDER":
-        raise ValueError(
-            "MagnaCare payer ID is still a placeholder — confirm the real ID before sending."
-        )
     return payer_id
 
 
@@ -176,7 +172,7 @@ def _validate_inputs(row: dict[str, Any], *, payer_id: str | None = None) -> Non
         general_insurance = _safe_str(row.get("General Insurance"))
         if not general_insurance:
             raise ValueError("Missing required field: General Insurance")
-        # Payer mapping check (also validates MagnaCare placeholder)
+        # Payer mapping check
         _resolve_payer_id(general_insurance)
 
     if not _safe_str(row.get("Member ID")):
