@@ -39,6 +39,12 @@ GENERAL_PAYER_ID_MAP: dict[str, str] = {
     "Medicaid":           "MCDNY",
     "Midlands Choice":    "47080",
     "MagnaCare":          "MAGNACARE_PLACEHOLDER",
+    # Newly approved Primary Insurance labels (PRD §5) routed via their
+    # respective Stedi payer IDs (see claim_assumptions.PAYER_ID_MAP).
+    "Horizon BCBS":       "11348",
+    "BCBS TN":            "SB890",
+    "BCBS FL":            "BCBSF",
+    "BCBS WY":            "53767",
     "Stedi":              "STEDITEST"
 }
 
@@ -54,6 +60,10 @@ STEDI_TRADING_PARTNER_NAME_BY_PAYER_ID: dict[str, str] = {
     "MCDNY":                  "Medicaid New York",
     "47080":                  "Midlands Choice",
     "11303":                  "MagnaCare",
+    "11348":                  "Horizon Blue Cross and Blue Shield of New Jersey",
+    "SB890":                  "BlueCross BlueShield of Tennessee",
+    "BCBSF":                  "Florida Blue (BCBS FL)",
+    "53767":                  "BlueCross BlueShield of Wyoming",
     "STEDITEST":              "Stedi Test Payer",
 }
 
@@ -71,6 +81,10 @@ GENERAL_CLAIM_FILING_CODE_MAP: dict[str, str] = {
     "Medicaid":           "MC",
     "Midlands Choice":    "CI",
     "MagnaCare":          "CI",
+    "Horizon BCBS":       "CI",
+    "BCBS TN":            "CI",
+    "BCBS FL":            "CI",
+    "BCBS WY":            "CI",
 }
 
 DEFAULT_CLAIM_FILING_CODE = "CI"
