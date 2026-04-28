@@ -170,6 +170,23 @@ def run_eligibility_check(monday_item: dict) -> dict[str, Any]:
             f"coverage_type={writeback.get('Stedi Coverage Type')!r} "
             f"ma={writeback.get('Stedi Medicare Advantage?')!r}"
         )
+
+        # Diagnostic: when Active comes back No but no error description was
+        # written, dump the raw 271 so we can see exactly what shape the
+        # payer returned. Targeted log — only fires for the puzzling cases.
+        try:
+            if (writeback.get("Stedi Part B Active?") == "No"
+                and not (writeback.get("Stedi Eligibility Error Description") or "").strip()):
+                import json as _json
+                logger.warning(
+                    f"[ELG] ⚠ Active=No without error — raw 271 dump | "
+                    f"item={item_id} | "
+                    f"plan_status={_json.dumps(raw_response.get('planStatus') or [])} | "
+                    f"benefits_codes={_json.dumps([{'code': r.get('code'), 'name': r.get('name'), 'serviceTypeCodes': r.get('serviceTypeCodes'), 'statusCode': r.get('statusCode')} for r in (raw_response.get('benefitsInformation') or [])])}"
+                )
+        except Exception:
+            pass
+
         return writeback
 
     except ValueError as e:
