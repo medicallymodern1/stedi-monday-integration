@@ -120,6 +120,37 @@ def extract_eligibility_inputs(monday_item: dict) -> dict[str, Any]:
 # B + C + D. ORCHESTRATION
 # =============================================================================
 
+
+
+
+# ---------------------------------------------------------------------------
+# Coverage-unavailable detection
+# ---------------------------------------------------------------------------
+
+def _is_coverage_unavailable(raw_response: dict) -> tuple[bool, str]:
+    """
+    Stedi flags responses where the payer found the patient but did not
+    return coverage status with a top-level warning of code
+    COVERAGE_INFORMATION_UNAVAILABLE. The 271 typically has empty
+    planStatus and a benefitsInformation row of code "U" pointing at a
+    different entity (e.g. NY Medicaid eMedNY pointing at Healthfirst
+    PHSP for managed care members).
+
+    Without this short-circuit the parser falls through and writes
+    Active=No, which is misleading: the payer never said inactive,
+    they said "I don't know — go ask someone else." Treat it as a
+    failure and surface the reason in the error description column.
+
+    Mirrors the same handler in subscription_eligibility_service.
+    """
+    for w in raw_response.get("warnings") or []:
+        if not isinstance(w, dict):
+            continue
+        if str(w.get("code", "")).strip().upper() == "COVERAGE_INFORMATION_UNAVAILABLE":
+            return True, (str(w.get("description") or "").strip()
+                          or "Coverage information unavailable")
+    return False, ""
+
 def run_eligibility_check(monday_item: dict) -> dict[str, Any]:
     """
     Full pipeline: Monday Intake Board item → eligibility writeback dict.
@@ -161,6 +192,18 @@ def run_eligibility_check(monday_item: dict) -> dict[str, Any]:
         # C. Send to Stedi
         raw_response = send_eligibility_request(payload)
         logger.info(f"[ELG] Response received | item={item_id}")
+
+        # C2. Short-circuit on COVERAGE_INFORMATION_UNAVAILABLE — see helper.
+        # Common pattern: NY Medicaid managed-care members where eMedNY
+        # punts to the MCO (Healthfirst, etc.). Without this, parser would
+        # fall through to Active=No which misleadingly reads as "Inactive".
+        is_unavail, unavail_reason = _is_coverage_unavailable(raw_response)
+        if is_unavail:
+            logger.warning(
+                f"[ELG] ! Coverage unavailable | item={item_id} "
+                f"reason={unavail_reason!r}"
+            )
+            return error_response(unavail_reason)
 
         # D. Parse response → 23-field writeback
         writeback = parse_eligibility_response(raw_response)
