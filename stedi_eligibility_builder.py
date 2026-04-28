@@ -41,7 +41,7 @@ GENERAL_PAYER_ID_MAP: dict[str, str] = {
     "MagnaCare":          "MAGNACARE_PLACEHOLDER",
     # Newly approved Primary Insurance labels (PRD §5) routed via their
     # respective Stedi payer IDs (see claim_assumptions.PAYER_ID_MAP).
-    "Horizon BCBS":       "11348",
+    "Horizon BCBS":       "803",  # route Intake eligibility through Anthem (we are enrolled with 803, not 11348)
     "BCBS TN":            "SB890",
     "BCBS FL":            "BCBSF",
     "BCBS WY":            "53767",
