@@ -133,26 +133,50 @@ def _select_benefit_row(
 
 def _parse_part_b_active(response: dict) -> str:
     """
-    Stedi Part B Active? — Yes/No.
-    Look for active coverage status with service type 12 in planStatus,
-    then fall back to a benefit code "1" row with service type 12.
+    "Active?" flag for the eligibility writeback. Despite the historical
+    "Part B" name, this is the generic active-coverage indicator written
+    to both the Intake and Subscription boards.
+
+    Two regimes:
+
+    1. **Medicare responses** (any benefit row with insuranceTypeCode MA
+       or MB, or any planStatus / benefit row that carries a Medicare
+       insurance-type signal): require service type 12 (DME) to be active.
+       Medicare Part A alone is not enough to bill DME, so we report No
+       in that case even though A is technically "active".
+
+    2. **Non-Medicare responses** (Medicaid, Commercial, BCBS, etc.):
+       any Active Coverage signal counts. Medicaid 271s typically report
+       active coverage on service type 30 (Health Benefit Plan Coverage)
+       and omit STC 12 entirely, so requiring STC 12 here would falsely
+       mark active Medicaid patients as Inactive.
     """
-    # Check planStatus first
-    for ps in _plan_status_list(response):
-        codes = ps.get("serviceTypeCodes") or []
-        status_text = (ps.get("status") or "").lower()
-        if "12" in codes and "active" in status_text:
-            return "Yes"
-
-    # Check benefitsInformation for code "1" (active coverage) + service type 12
+    # ── Detect Medicare regime ──────────────────────────────────────────
+    is_medicare = False
     for row in _benefits(response):
-        if row.get("code") == "1" and _has_service_type_12(row):
-            return "Yes"
+        ins_type_code = (row.get("insuranceTypeCode") or "").upper()
+        if ins_type_code in ("MA", "MB"):
+            is_medicare = True
+            break
 
-    # If we got any planStatus at all but none matched, it's No
-    if _plan_status_list(response) or _benefits(response):
+    if is_medicare:
+        # Strict Part B (STC 12) check
+        for ps in _plan_status_list(response):
+            codes = ps.get("serviceTypeCodes") or []
+            if "12" in codes and ps.get("statusCode") == "1":
+                return "Yes"
+        for row in _benefits(response):
+            if row.get("code") == "1" and _has_service_type_12(row):
+                return "Yes"
         return "No"
 
+    # ── Non-Medicare: any Active Coverage anywhere ──────────────────────
+    for ps in _plan_status_list(response):
+        if ps.get("statusCode") == "1":
+            return "Yes"
+    for row in _benefits(response):
+        if row.get("code") == "1":
+            return "Yes"
     return "No"
 
 
