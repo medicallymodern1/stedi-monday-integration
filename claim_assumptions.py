@@ -97,6 +97,7 @@ PAYER_ID_MAP = {
     "BCBS TN": "SB890",
     "BCBS FL": "BCBSF",
     "BCBS Wyoming": "53767",
+    "BCBS WY":      "53767",
     "United Medicaid": "87726",
     "Stedi": "STEDITEST",
 }
@@ -124,6 +125,7 @@ CLAIM_FILING_CODE_MAP = {
     "BCBS TN": "CI",
     "BCBS FL": "CI",
     "BCBS Wyoming": "CI",
+    "BCBS WY":      "CI",
     "United Medicaid": "MC",
 }
 
