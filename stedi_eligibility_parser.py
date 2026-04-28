@@ -655,15 +655,54 @@ def _parse_financial_field(
 
 
 def _parse_plan_begin_date(response: dict) -> str:
-    """Top-level planDateInformation.planBegin, formatted as YYYY-MM-DD if YYYYMMDD."""
-    plan_dates = response.get("planDateInformation") or {}
-    raw = (plan_dates.get("planBegin") or "").strip()
-    if not raw:
-        return ""
-    # Convert YYYYMMDD → YYYY-MM-DD for readability
-    if len(raw) == 8 and raw.isdigit():
-        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
-    return raw
+    """
+    Resolve the plan-begin / coverage-effective date from a Stedi 271 response.
+    Different payers populate this in different slots, so we probe several
+    in priority order and return the first non-empty hit.
+
+    Probes (each may be YYYYMMDD or YYYY-MM-DD):
+      1. response.planDateInformation.planBegin           — most payers
+      2. response.planDateInformation.eligibility         — some commercial
+      3. response.planDateInformation.coverage            — fallback
+      4. benefitsInformation[].benefitsDateInformation.planBegin       — Medicare often
+      5. benefitsInformation[].benefitsDateInformation.eligibilityBegin
+      6. benefitsInformation[].benefitsDateInformation.eligibility
+      7. benefitsInformation[].benefitsDateInformation.coverage
+
+    For benefitsInformation hits we pick the earliest date — that's the
+    overall plan effective date even if Part A and Part B were issued
+    on different dates.
+
+    Returns "" if no probe matched.
+    """
+    def _norm(raw: str) -> str:
+        raw = (raw or "").strip()
+        if not raw:
+            return ""
+        if len(raw) == 8 and raw.isdigit():
+            return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+        return raw
+
+    # 1-3: top-level planDateInformation
+    pdi = response.get("planDateInformation") or {}
+    for key in ("planBegin", "eligibility", "coverage"):
+        hit = _norm(pdi.get(key) or "")
+        if hit:
+            return hit
+
+    # 4-7: per-benefit benefitsDateInformation — pick the earliest
+    candidates: list[str] = []
+    for bi in (response.get("benefitsInformation") or []):
+        bdi = bi.get("benefitsDateInformation") or {}
+        for key in ("planBegin", "eligibilityBegin", "eligibility", "coverage"):
+            hit = _norm(bdi.get(key) or "")
+            if hit:
+                candidates.append(hit)
+    if candidates:
+        # Earliest YYYY-MM-DD string sorts lexicographically
+        return min(candidates)
+
+    return ""
 
 
 def _parse_error_description(response: dict) -> str:
