@@ -133,9 +133,37 @@ def write_eligibility_to_monday(item_id: str, writeback: dict[str, Any]) -> None
         )
 
 
+# Trigger-column ID for "Run Stedi Eligibility" on the Intake board.
+# Status column with labels: Run / Failed. Flipped to Failed whenever
+# a check returns an error description, so a board user can see at a
+# glance which rows need attention without scanning every error column.
+RUN_ELIGIBILITY_COLUMN_ID = "color_mm1yeksx"
+
+
+def _flip_run_eligibility_failed(item_id: str) -> None:
+    """Flip the Run Stedi Eligibility status to 'Failed'. Best-effort."""
+    if not INTAKE_BOARD_ID:
+        return
+    try:
+        run_query(_UPDATE_MUTATION, {
+            "itemId":   str(item_id),
+            "boardId":  str(INTAKE_BOARD_ID),
+            "columnId": RUN_ELIGIBILITY_COLUMN_ID,
+            "value":    json.dumps({"label": "Failed"}),
+        })
+        logger.info(f"[ELG-MONDAY] ✓ flipped Run Stedi Eligibility -> 'Failed' (item={item_id})")
+    except Exception as e:
+        logger.warning(f"[ELG-MONDAY] ✗ Could not flip Run Stedi Eligibility -> Failed: {e}")
+
+
 def run_and_write_eligibility(item_id: str, monday_item: dict) -> dict:
     """
     Convenience: run full eligibility pipeline + write to Monday in one call.
+
+    Also flips the Run Stedi Eligibility trigger column to "Failed" when
+    the writeback carries an error description, so the board surfaces
+    failures at the row-status level (matches the Subscription board's
+    Run Check → Failed behaviour).
 
     Used by the eligibility webhook trigger handler.
     Returns the writeback dict for logging / inspection.
@@ -144,4 +172,13 @@ def run_and_write_eligibility(item_id: str, monday_item: dict) -> dict:
 
     writeback = run_eligibility_check(monday_item)
     write_eligibility_to_monday(item_id, writeback)
+
+    # Flip Run Eligibility -> Failed when any error description came back.
+    # Covers all failure modes: validation errors, HTTP errors, payer AAA
+    # errors (e.g. "Invalid/Missing Subscriber/Insured Name"), and the
+    # COVERAGE_INFORMATION_UNAVAILABLE warning short-circuit.
+    err_desc = (writeback.get("Stedi Eligibility Error Description") or "").strip()
+    if err_desc:
+        _flip_run_eligibility_failed(str(item_id))
+
     return writeback
