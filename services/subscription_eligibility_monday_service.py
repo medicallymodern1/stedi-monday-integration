@@ -109,6 +109,12 @@ def _encode_subscription_columns(writeback: dict[str, Any]) -> dict[str, Any]:
     payer_name = (writeback.get("Stedi Payer Name") or "").strip()
     plan_name  = (writeback.get("Stedi Plan Name") or "").strip()
     ded_rem    = writeback.get("Stedi Individual Deductible Remaining")
+    # Fall back to Family Deductible Remaining when Individual is blank.
+    # Some plans (e.g. Cigna family policies) only report family-level
+    # deductibles, so without this fallback the Ded. Remaining column
+    # would stay blank even though we know the family number.
+    if ded_rem in (None, "", "Not returned"):
+        ded_rem = writeback.get("Stedi Family Deductible Remaining")
     pa_req     = (writeback.get("Sub Prior Auth Req?") or "").strip()
     ins_change = (writeback.get("Sub Insurance Change?") or "").strip()
 
