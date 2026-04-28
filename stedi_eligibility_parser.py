@@ -821,6 +821,7 @@ def parse_eligibility_response(response: dict) -> dict[str, Any]:
 
         # ── Plan dates & errors ───────────────────────────────────────────
         "Stedi Plan Begin Date":             _parse_plan_begin_date(response),
+        "Stedi Managed Medicaid":            _parse_managed_medicaid_carrier(response),
         "Stedi Eligibility Error Description": _parse_error_description(response),
     }
 
@@ -834,11 +835,48 @@ def parse_eligibility_response(response: dict) -> dict[str, Any]:
     return result
 
 
-def error_response(error_description: str) -> dict[str, Any]:
+
+
+
+def _parse_managed_medicaid_carrier(response: dict) -> str:
     """
-    Return a minimal writeback dict with only the error field populated.
-    All other columns are blank so existing Monday values are not overwritten.
-    Used when validation or HTTP errors prevent a real Stedi response.
+    When a Medicaid 271 returns coverage-unavailable with a benefits row
+    of code 'U' ("Contact Following Entity for Eligibility or Benefit
+    Information"), the X12 LS/2120 loop names the managed-care plan the
+    patient is actually enrolled with. Stedi surfaces this as either:
+      benefitsInformation[].benefitsRelatedEntity.entityName, or
+      benefitsInformation[].benefitsRelatedEntities[].entityName
+
+    Pull the first MCO entity name we see — typical NY values include
+    "HEALTH FIRST PHSP INC", "FIDELIS CARE NEW YORK", "METROPLUS
+    HEALTH PLAN", etc. Returns "" if no managed-care referral exists.
+    """
+    for row in (response.get("benefitsInformation") or []):
+        if (row.get("code") or "").strip().upper() != "U":
+            continue
+        # Try the singular benefitsRelatedEntity first
+        ent = row.get("benefitsRelatedEntity") or {}
+        name = (ent.get("entityName") or "").strip()
+        if name:
+            return name
+        # Fall back to the list form
+        for ent in (row.get("benefitsRelatedEntities") or []):
+            name = (ent.get("entityName") or "").strip()
+            if name:
+                return name
+    return ""
+
+
+def error_response(
+    error_description: str,
+    managed_medicaid: str = "",
+) -> dict[str, Any]:
+    """
+    Return a minimal writeback dict with only the error field populated
+    (and optionally the managed-Medicaid MCO name when we have one from
+    a COVERAGE_INFORMATION_UNAVAILABLE response). All other columns are
+    blank so existing Monday values are not overwritten. Used when
+    validation or HTTP errors prevent a real Stedi response.
     """
     return {
         "Stedi Part B Active?":              "",
@@ -864,5 +902,6 @@ def error_response(error_description: str) -> dict[str, Any]:
         "Stedi Family OOP Max":              "",
         "Stedi Family OOP Max Remaining":    "",
         "Stedi Plan Begin Date":             "",
+        "Stedi Managed Medicaid":            managed_medicaid,
         "Stedi Eligibility Error Description": error_description,
     }

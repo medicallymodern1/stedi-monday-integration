@@ -59,6 +59,7 @@ ELIGIBILITY_OUTPUT_COLUMN_IDS: dict[str, str] = {
     "Stedi Family OOP Max":                   "text_mm1xqmg9",
     "Stedi Family OOP Max Remaining":         "text_mm1xkdgq",
     "Stedi Plan Begin Date":                  "text_mm1xsa9",
+    "Stedi Managed Medicaid":                 "text_mm2vyta1",
     "Stedi Eligibility Error Description":    "text_mm1x9tje",
 }
 

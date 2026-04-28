@@ -199,11 +199,13 @@ def run_eligibility_check(monday_item: dict) -> dict[str, Any]:
         # fall through to Active=No which misleadingly reads as "Inactive".
         is_unavail, unavail_reason = _is_coverage_unavailable(raw_response)
         if is_unavail:
+            from stedi_eligibility_parser import _parse_managed_medicaid_carrier
+            mco = _parse_managed_medicaid_carrier(raw_response)
             logger.warning(
                 f"[ELG] ! Coverage unavailable | item={item_id} "
-                f"reason={unavail_reason!r}"
+                f"reason={unavail_reason!r} mco={mco!r}"
             )
-            return error_response(unavail_reason)
+            return error_response(unavail_reason, managed_medicaid=mco)
 
         # D. Parse response → 23-field writeback
         writeback = parse_eligibility_response(raw_response)
