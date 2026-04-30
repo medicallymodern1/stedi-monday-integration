@@ -33,7 +33,7 @@ from services.monday_service import run_query
 logger = logging.getLogger(__name__)
 
 # Subscription Board (board 18407459988) column IDs — verified from board export.
-SUBSCRIPTION_BOARD_ID = os.getenv("MONDAY_SUBSCRIPTION_BOARD_ID")
+SUBSCRIPTION_BOARD_ID = os.getenv("MONDAY_SUBSCRIPTION_BOARD_ID", "18407459988")
 
 SUB_FIN_COL = {
     # Inputs
