@@ -336,7 +336,9 @@ PAYER_RATE_SCHEDULE = {
         infusion_rate=24.64,
         cartridge_rate=3.30,
         monitor_rate=298.7,
-        sensor_rate=310.0,
+        # 315.26 per unit -> 945.78 per fill (3 units of A4239), matching
+        # NYSHIP's actual fee-schedule rate. Was 310.0 (= $930 / fill).
+        sensor_rate=315.26,
     ),
     "Anthem BCBS Commercial": dict(
         pump_rate=4200.0,
