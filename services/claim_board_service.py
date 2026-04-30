@@ -107,6 +107,7 @@ CLAIMS_PARENT_COL = {
     "order_frequency":  "color_mky4mb3y",       # Frequency  (status)
     "claim_type":       "color_mm2nvk1p",       # Claim Type  (status: Original / Corrected / Void)
     "claim_status":     "color_mkxmywtb",       # Claim Status  (status: Submit Claim / ...)
+    "est_pay":          "numeric_mm2xdtk6",     # Est. Pay  (numbers — sum of line_charge_amount)
 
     # PRD 8.2 — python-derived fields
     "primary_payor":    "color_mkxmhypt",       # Primary Payor  (status)
@@ -1058,6 +1059,23 @@ def _create_parent_item(claim: dict) -> str:
     for col_id, col_type, value in fields:
         _write_column(item_id, CLAIMS_BOARD_ID, col_id,
                       format_monday_value(col_type, value, col_id), update_mut)
+
+    # Est. Pay — sum of line_charge_amount across this claim's service lines.
+    # Each line_charge_amount was already computed from PAYER_RATE_SCHEDULE rate
+    # × units (see resolve_line_item_charge_amount), so this is the estimated
+    # payment for the whole parent claim group. Multi-claim orders (e.g. Fidelis
+    # Medicaid pump+CGM split from supplies) get one Est. Pay per parent
+    # because each parent's service_lines are scoped to its own claim group.
+    est_pay_total = 0.0
+    for _line in claim.get("service_lines", []) or []:
+        try:
+            est_pay_total += float(_line.get("line_charge_amount", "") or 0)
+        except (TypeError, ValueError):
+            continue
+    if est_pay_total > 0:
+        _write_column(item_id, CLAIMS_BOARD_ID, CLAIMS_PARENT_COL["est_pay"],
+                      format_monday_value("numbers", round(est_pay_total, 2)),
+                      update_mut)
 
     # PRD 8.2 transitional optional qty fields (FR6: must not error if deleted)
     optional = [
