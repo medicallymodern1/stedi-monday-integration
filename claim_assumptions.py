@@ -443,7 +443,9 @@ PAYER_RATE_SCHEDULE = {
         infusion_rate=25.19,
         cartridge_rate=3.38,
         monitor_rate=295.36,
-        sensor_rate=267.92,
+        # 317.97 per unit -> 953.91 per fill (3 units of A4239), matching
+        # Humana's actual fee-schedule rate. Was 267.92 (= $803.76 / fill).
+        sensor_rate=317.97,
     ),
     "Cigna": dict(
         pump_rate=4200.0,
