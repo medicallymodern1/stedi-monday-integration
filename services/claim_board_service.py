@@ -15,7 +15,7 @@ import os
 import re
 import json
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta
 from calendar import monthrange
 from services.monday_service import run_query
 
@@ -106,6 +106,7 @@ CLAIMS_PARENT_COL = {
     "cgm_coverage":     "color_mm1ze7b4",       # CGM Coverage  (status)
     "order_frequency":  "color_mky4mb3y",       # Frequency  (status)
     "claim_type":       "color_mm2nvk1p",       # Claim Type  (status: Original / Corrected / Void)
+    "claim_status":     "color_mkxmywtb",       # Claim Status  (status: Submit Claim / ...)
 
     # PRD 8.2 — python-derived fields
     "primary_payor":    "color_mkxmhypt",       # Primary Payor  (status)
@@ -356,6 +357,26 @@ def normalize_date_iso(value: str) -> str:
         except ValueError:
             continue
     return ""
+
+
+def _resolve_dos_from_order_date(order_date_value: str) -> str:
+    """
+    Compute the Date of Service for a Claims Board item.
+
+    Per business rule: DOS = Order Date + 1 day. Falls back to
+    (today + 1 day) when the order has no date set, so we still
+    produce a valid date rather than blanking the field.
+    """
+    iso = normalize_date_iso(order_date_value or "")
+    base: date
+    if iso:
+        try:
+            base = datetime.strptime(iso, "%Y-%m-%d").date()
+        except ValueError:
+            base = date.today()
+    else:
+        base = date.today()
+    return (base + timedelta(days=1)).isoformat()
 
 
 def resolve_payer_id(payer_name: str) -> str:
@@ -616,7 +637,7 @@ def build_service_lines(cols: dict) -> list:
     cgm_sensor_qty  = safe_int(cols.get("qty_cgm_sensors"))
     cgm_monitor_qty = safe_int(cols.get("qty_cgm_monitor"))
 
-    dos = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
+    dos = _resolve_dos_from_order_date(cols.get("order_date", ""))
     lines = []
 
     # ── Insulin Pump ──────────────────────────────────────────────────────────
@@ -823,7 +844,7 @@ def group_lines_by_payer(cols: dict, lines: list) -> list:
     """
     payer_name   = cols.get("primary_insurance", "")
     payer_id     = resolve_payer_id(payer_name)
-    dos          = normalize_date_iso(cols.get("order_date", "")) or date.today().isoformat()
+    dos          = _resolve_dos_from_order_date(cols.get("order_date", ""))
     secondary_id = cols.get("secondary_id", "")
     plan_name    = cols.get("plan_name", "")  # from subitem; confirm column ID with Brandon
 
@@ -1021,6 +1042,9 @@ def _create_parent_item(claim: dict) -> str:
         # self-describing and lets filters on Claim Type=Original
         # actually capture these rows.
         (CLAIMS_PARENT_COL["claim_type"],       "status",   "Original"),
+        # Default Claim Status to "Submit Claim" on creation so the row
+        # lands in the queue ready for the billing team to file.
+        (CLAIMS_PARENT_COL["claim_status"],     "status",   "Submit Claim"),
     ]
     for col_id, col_type, value in fields:
         _write_column(item_id, CLAIMS_BOARD_ID, col_id,
