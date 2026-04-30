@@ -50,7 +50,12 @@ SUB_FIN_COL = {
     "supplies_revenue":      "numeric_mm27rypj",
     "supplies_cost":         "numeric_mm27hem2",
     "supplies_gp":           "numeric_mm2785ag",
-    # Annualised totals — computed by us, written when both sides succeed.
+    # Per-fill totals — computed by us (replaces the previous Monday formula
+    # columns so all financial math lives in one place).
+    "total_revenue":         "numeric_mm2xsjm5",
+    "total_cost":            "numeric_mm2xgvxx",
+    "total_gp":              "numeric_mm2xvjc1",
+    # Annualised totals — written when no side fails.
     "arr":                   "numeric_mm2xsqyd",  # Annual Recurring Revenue
     "arp":                   "numeric_mm2xdsvh",  # Annual Recurring Profit
 }
@@ -231,15 +236,30 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
         return {"ok": False, "reasons": failures,
                 "sensors": sensors_result, "supplies": supplies_result}
 
-    # Both sides succeeded — compute and write annualised totals.
+    # No side failed — compute and write Totals + Annualised values.
     total_revenue = 0.0
+    total_cost    = 0.0
     total_gp      = 0.0
     if sensors_result and sensors_result["ok"]:
         total_revenue += sensors_result["revenue"]
+        total_cost    += sensors_result["cost"]
         total_gp      += sensors_result["gp"]
     if supplies_result and supplies_result["ok"]:
         total_revenue += supplies_result["revenue"]
+        total_cost    += supplies_result["cost"]
         total_gp      += supplies_result["gp"]
+
+    total_revenue = round(total_revenue, 2)
+    total_cost    = round(total_cost,    2)
+    total_gp      = round(total_gp,      2)
+
+    _write_number(item_id, SUB_FIN_COL["total_revenue"], total_revenue)
+    _write_number(item_id, SUB_FIN_COL["total_cost"],    total_cost)
+    _write_number(item_id, SUB_FIN_COL["total_gp"],      total_gp)
+    logger.info(
+        f"[FIN-EST] Totals | item={item_id} "
+        f"rev={total_revenue} cost={total_cost} gp={total_gp}"
+    )
 
     # Canonical primary (apply alias) so e.g. "Magnacare" matches the same
     # casing used in the Medicaid set if/when it lands there.
@@ -261,9 +281,12 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
     _set_trigger(item_id, "")
     return {
         "ok": True,
-        "sensors": sensors_result,
-        "supplies": supplies_result,
-        "arr": arr,
-        "arp": arp,
-        "multiplier": multiplier,
+        "sensors":       sensors_result,
+        "supplies":      supplies_result,
+        "total_revenue": total_revenue,
+        "total_cost":    total_cost,
+        "total_gp":      total_gp,
+        "arr":           arr,
+        "arp":           arp,
+        "multiplier":    multiplier,
     }
