@@ -50,7 +50,24 @@ SUB_FIN_COL = {
     "supplies_revenue":      "numeric_mm27rypj",
     "supplies_cost":         "numeric_mm27hem2",
     "supplies_gp":           "numeric_mm2785ag",
+    # Annualised totals — computed by us, written when both sides succeed.
+    "arr":                   "numeric_mm2xsqyd",  # Annual Recurring Revenue
+    "arp":                   "numeric_mm2xdsvh",  # Annual Recurring Profit
 }
+
+# Patients whose primary insurance bills bi-monthly (6 fills/year)
+# instead of quarterly (4). Brandon's spec: "if it's medicaid, x6".
+# Low-Cost / CHP / Essential plans are NOT included by default since
+# they're subsidized-commercial rather than pure Medicaid — confirm
+# with Brandon if you want them in.
+MEDICAID_FILLS_PER_YEAR = {
+    "Fidelis Medicaid",
+    "Anthem BCBS Medicaid (JLJ)",
+    "United Medicaid",
+    "Medicaid",
+}
+ARR_QUARTERLY_MULTIPLIER = 4
+ARR_MEDICAID_MULTIPLIER  = 6
 
 CALCULATE_TRIGGER_LABEL = "Calculate"
 FAILED_TRIGGER_LABEL    = "Failed"
@@ -214,6 +231,39 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
         return {"ok": False, "reasons": failures,
                 "sensors": sensors_result, "supplies": supplies_result}
 
+    # Both sides succeeded — compute and write annualised totals.
+    total_revenue = 0.0
+    total_gp      = 0.0
+    if sensors_result and sensors_result["ok"]:
+        total_revenue += sensors_result["revenue"]
+        total_gp      += sensors_result["gp"]
+    if supplies_result and supplies_result["ok"]:
+        total_revenue += supplies_result["revenue"]
+        total_gp      += supplies_result["gp"]
+
+    # Canonical primary (apply alias) so e.g. "Magnacare" matches the same
+    # casing used in the Medicaid set if/when it lands there.
+    from services.financial_estimate_service import _canonical
+    canonical_primary = _canonical((primary or "").strip())
+    multiplier = (ARR_MEDICAID_MULTIPLIER
+                  if canonical_primary in MEDICAID_FILLS_PER_YEAR
+                  else ARR_QUARTERLY_MULTIPLIER)
+    arr = round(total_revenue * multiplier, 2)
+    arp = round(total_gp      * multiplier, 2)
+    _write_number(item_id, SUB_FIN_COL["arr"], arr)
+    _write_number(item_id, SUB_FIN_COL["arp"], arp)
+    logger.info(
+        f"[FIN-EST] Annualised | item={item_id} primary={canonical_primary!r} "
+        f"x{multiplier} -> ARR={arr} ARP={arp}"
+    )
+
     logger.info(f"[FIN-EST] ✓ Done | item={item_id}")
     _set_trigger(item_id, "")
-    return {"ok": True, "sensors": sensors_result, "supplies": supplies_result}
+    return {
+        "ok": True,
+        "sensors": sensors_result,
+        "supplies": supplies_result,
+        "arr": arr,
+        "arp": arp,
+        "multiplier": multiplier,
+    }
