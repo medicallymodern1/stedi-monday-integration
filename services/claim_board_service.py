@@ -470,8 +470,17 @@ def format_monday_value(col_type: str, value, column_id: str = None,
                     logger.info(f"[STATUS] Subitem payer fallback: '{sv}' → '{base}' (index={index})")
 
         if index is None:
-            logger.warning(f"[STATUS] No mapping: column={column_id} value='{value}' — skipped")
-            return None
+            # Fall back to a label-based write. Monday's API accepts
+            # {"label": "..."} for any label that already exists on the
+            # column, which is exactly what we have for newer status
+            # columns added to the board without their entries having
+            # been backfilled into STATUS_INDEX_MAP. Logs at info-level
+            # so we still see which columns are using the fallback.
+            logger.info(
+                f"[STATUS] No index map for column={column_id} "
+                f"value={value!r}; writing as label fallback"
+            )
+            return json.dumps({"label": str(value)})
         return json.dumps({"index": index})
 
     if col_type == "dropdown":
