@@ -206,7 +206,24 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
     # Build the column-values payload incrementally so the whole writeback
     # goes in ONE Monday mutation per row (was 11 — kicking off 500 rows in
     # a row used to blow through Monday's per-minute complexity budget).
-    payload: dict[str, Any] = {}
+    #
+    # Seed every output column to blank first so stale values from a prior
+    # run don't linger. Example: a row recalculated from "Sensors & Supplies"
+    # to "Sensors only" would otherwise keep yesterday's supplies numbers.
+    # Numeric columns clear by passing an empty string in the JSON payload.
+    payload: dict[str, Any] = {
+        SUB_FIN_COL["sensors_revenue"]:  "",
+        SUB_FIN_COL["sensors_cost"]:     "",
+        SUB_FIN_COL["sensors_gp"]:       "",
+        SUB_FIN_COL["supplies_revenue"]: "",
+        SUB_FIN_COL["supplies_cost"]:    "",
+        SUB_FIN_COL["supplies_gp"]:      "",
+        SUB_FIN_COL["total_revenue"]:    "",
+        SUB_FIN_COL["total_cost"]:       "",
+        SUB_FIN_COL["total_gp"]:         "",
+        SUB_FIN_COL["arr"]:              "",
+        SUB_FIN_COL["arp"]:              "",
+    }
 
     if sensors_result and sensors_result["ok"]:
         payload[SUB_FIN_COL["sensors_revenue"]] = str(sensors_result["revenue"])
