@@ -78,13 +78,15 @@ CALCULATE_TRIGGER_LABEL = "Calculate"
 FAILED_TRIGGER_LABEL    = "Failed"
 
 
-_UPDATE_MUTATION = """
-mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-  change_column_value(
+# One mutation per row instead of 11, so 500 rows in a row don't blow
+# through Monday's per-minute complexity budget. The whole writeback
+# (numeric columns + trigger flip) goes in a single call.
+_UPDATE_MULTI_MUTATION = """
+mutation UpdateMulti($itemId: ID!, $boardId: ID!, $columnValues: JSON!) {
+  change_multiple_column_values(
     item_id: $itemId,
     board_id: $boardId,
-    column_id: $columnId,
-    value: $value
+    column_values: $columnValues
   ) { id }
 }
 """
@@ -130,34 +132,30 @@ def extract_financial_inputs(monday_item: dict) -> dict[str, Any]:
 # Monday writes
 # ---------------------------------------------------------------------------
 
-def _write_column(item_id: str, col_id: str, value: Any) -> None:
+def _write_all(item_id: str, column_values: dict[str, Any]) -> None:
+    """
+    Single Monday API call that updates every populated column in one shot.
+
+    column_values is a {column_id: value} dict where each value is in
+    Monday's native shape for that column type:
+      - Numeric columns: a string (e.g., "954.00")
+      - Status columns:  {"label": "Failed"} or {"label": ""} to clear
+
+    No-op if there's nothing to write.
+    """
     if not SUBSCRIPTION_BOARD_ID:
         logger.error(
             "[FIN-EST-MONDAY] MONDAY_SUBSCRIPTION_BOARD_ID env var not set — "
             "cannot write to Monday."
         )
         return
-    run_query(_UPDATE_MUTATION, {
-        "itemId":   str(item_id),
-        "boardId":  str(SUBSCRIPTION_BOARD_ID),
-        "columnId": col_id,
-        "value":    json.dumps(value) if not isinstance(value, str) else json.dumps(value),
+    if not column_values:
+        return
+    run_query(_UPDATE_MULTI_MUTATION, {
+        "itemId":       str(item_id),
+        "boardId":      str(SUBSCRIPTION_BOARD_ID),
+        "columnValues": json.dumps(column_values),
     })
-
-
-def _write_number(item_id: str, col_id: str, n: float) -> None:
-    """Numeric columns: Monday accepts a JSON-encoded string."""
-    _write_column(item_id, col_id, str(n))
-
-
-def _set_trigger(item_id: str, label: str) -> None:
-    """
-    Flip the Calculate Financials trigger column.
-    - label="Failed"  -> mark Failed
-    - label=""        -> clear (success)
-    """
-    value: dict[str, str] = {"label": label} if label else {"label": ""}
-    _write_column(item_id, SUB_FIN_COL["calculate_financials"], value)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +184,9 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
     if not (needs_sensors or needs_supplies):
         msg = f"Subscription {inputs['subscription']!r} is empty or unrecognized"
         logger.warning(f"[FIN-EST] ! Failed | item={item_id} reason={msg}")
-        _set_trigger(item_id, FAILED_TRIGGER_LABEL)
+        _write_all(item_id, {
+            SUB_FIN_COL["calculate_financials"]: {"label": FAILED_TRIGGER_LABEL},
+        })
         return {"ok": False, "reason": msg}
 
     failures: list[str] = []
@@ -203,40 +203,33 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
         if not supplies_result["ok"]:
             failures.append(f"Supplies: {supplies_result['reason']}")
 
-    # Write whichever side(s) succeeded
+    # Build the column-values payload incrementally so the whole writeback
+    # goes in ONE Monday mutation per row (was 11 — kicking off 500 rows in
+    # a row used to blow through Monday's per-minute complexity budget).
+    payload: dict[str, Any] = {}
+
     if sensors_result and sensors_result["ok"]:
-        _write_number(item_id, SUB_FIN_COL["sensors_revenue"], sensors_result["revenue"])
-        _write_number(item_id, SUB_FIN_COL["sensors_cost"],    sensors_result["cost"])
-        _write_number(item_id, SUB_FIN_COL["sensors_gp"],      sensors_result["gp"])
-        logger.info(
-            f"[FIN-EST] Sensors written | item={item_id} "
-            f"rev={sensors_result['revenue']} cost={sensors_result['cost']} "
-            f"gp={sensors_result['gp']}"
-        )
+        payload[SUB_FIN_COL["sensors_revenue"]] = str(sensors_result["revenue"])
+        payload[SUB_FIN_COL["sensors_cost"]]    = str(sensors_result["cost"])
+        payload[SUB_FIN_COL["sensors_gp"]]      = str(sensors_result["gp"])
 
     if supplies_result and supplies_result["ok"]:
-        _write_number(item_id, SUB_FIN_COL["supplies_revenue"], supplies_result["revenue"])
-        _write_number(item_id, SUB_FIN_COL["supplies_cost"],    supplies_result["cost"])
-        _write_number(item_id, SUB_FIN_COL["supplies_gp"],      supplies_result["gp"])
-        logger.info(
-            f"[FIN-EST] Supplies written | item={item_id} "
-            f"rev={supplies_result['revenue']} cost={supplies_result['cost']} "
-            f"gp={supplies_result['gp']} "
-            f"payer={supplies_result.get('supplies_payer')!r} "
-            f"inf_units={supplies_result.get('infusion_units')} "
-            f"cart_units={supplies_result.get('cartridge_units')}"
-        )
+        payload[SUB_FIN_COL["supplies_revenue"]] = str(supplies_result["revenue"])
+        payload[SUB_FIN_COL["supplies_cost"]]    = str(supplies_result["cost"])
+        payload[SUB_FIN_COL["supplies_gp"]]      = str(supplies_result["gp"])
 
-    # Flip trigger column
+    # Failure path — only write the side(s) that succeeded, then flip the
+    # trigger to Failed in the same mutation.
     if failures:
+        payload[SUB_FIN_COL["calculate_financials"]] = {"label": FAILED_TRIGGER_LABEL}
+        _write_all(item_id, payload)
         logger.warning(
             f"[FIN-EST] ! Failed | item={item_id} reasons={failures}"
         )
-        _set_trigger(item_id, FAILED_TRIGGER_LABEL)
         return {"ok": False, "reasons": failures,
                 "sensors": sensors_result, "supplies": supplies_result}
 
-    # No side failed — compute and write Totals + Annualised values.
+    # Success path — also compute totals + annualised values.
     total_revenue = 0.0
     total_cost    = 0.0
     total_gp      = 0.0
@@ -253,13 +246,9 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
     total_cost    = round(total_cost,    2)
     total_gp      = round(total_gp,      2)
 
-    _write_number(item_id, SUB_FIN_COL["total_revenue"], total_revenue)
-    _write_number(item_id, SUB_FIN_COL["total_cost"],    total_cost)
-    _write_number(item_id, SUB_FIN_COL["total_gp"],      total_gp)
-    logger.info(
-        f"[FIN-EST] Totals | item={item_id} "
-        f"rev={total_revenue} cost={total_cost} gp={total_gp}"
-    )
+    payload[SUB_FIN_COL["total_revenue"]] = str(total_revenue)
+    payload[SUB_FIN_COL["total_cost"]]    = str(total_cost)
+    payload[SUB_FIN_COL["total_gp"]]      = str(total_gp)
 
     # Canonical primary (apply alias) so e.g. "Magnacare" matches the same
     # casing used in the Medicaid set if/when it lands there.
@@ -270,15 +259,20 @@ def run_and_write_financial_estimate(item_id: str, monday_item: dict) -> dict[st
                   else ARR_QUARTERLY_MULTIPLIER)
     arr = round(total_revenue * multiplier, 2)
     arp = round(total_gp      * multiplier, 2)
-    _write_number(item_id, SUB_FIN_COL["arr"], arr)
-    _write_number(item_id, SUB_FIN_COL["arp"], arp)
-    logger.info(
-        f"[FIN-EST] Annualised | item={item_id} primary={canonical_primary!r} "
-        f"x{multiplier} -> ARR={arr} ARP={arp}"
-    )
+    payload[SUB_FIN_COL["arr"]] = str(arr)
+    payload[SUB_FIN_COL["arp"]] = str(arp)
 
-    logger.info(f"[FIN-EST] ✓ Done | item={item_id}")
-    _set_trigger(item_id, "")
+    # Clear the trigger column on success — same mutation.
+    payload[SUB_FIN_COL["calculate_financials"]] = {"label": ""}
+
+    _write_all(item_id, payload)
+    logger.info(
+        f"[FIN-EST] ✓ Done | item={item_id} "
+        f"sensors={sensors_result and sensors_result.get('revenue')} "
+        f"supplies={supplies_result and supplies_result.get('revenue')} "
+        f"total_rev={total_revenue} total_gp={total_gp} "
+        f"x{multiplier} ARR={arr} ARP={arp}"
+    )
     return {
         "ok": True,
         "sensors":       sensors_result,
